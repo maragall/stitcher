@@ -209,7 +209,7 @@ class TileFusion:
         self,
         tiff_path: Union[str, Path],
         output_path: Union[str, Path] = None,
-        blend_pixels: Tuple[int, int] = (200, 200),
+        blend_pixels: Tuple[int, int] = (0, 0),  # No blending by default
         downsample_factors: Tuple[int, int] = (4, 4),
         ssim_window: int = 15,
         threshold: float = 0.5,
@@ -387,6 +387,8 @@ class TileFusion:
             arr = tif.series[tile_idx].asarray()
         if arr.ndim == 2:
             arr = arr[np.newaxis, :, :]
+        # Flip along Y axis to correct orientation
+        arr = np.flip(arr, axis=-2)
         return arr.astype(np.float32)
 
     def _read_tile_region(
@@ -400,6 +402,8 @@ class TileFusion:
             arr = tif.series[tile_idx].asarray()
         if arr.ndim == 2:
             arr = arr[np.newaxis, :, :]
+        # Flip along Y axis to correct orientation
+        arr = np.flip(arr, axis=-2)
         return arr[:, y_slice, x_slice].astype(np.float32)
 
     @staticmethod
