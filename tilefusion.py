@@ -18,7 +18,7 @@ import numpy as np
 import tifffile
 import tensorstore as ts
 from numba import njit, prange
-from tqdm import trange
+from tqdm import trange, tqdm
 
 try:
     import cupy as cp
@@ -210,7 +210,7 @@ class TileFusion:
         tiff_path: Union[str, Path],
         output_path: Union[str, Path] = None,
         blend_pixels: Tuple[int, int] = (0, 0),  # No blending by default
-        downsample_factors: Tuple[int, int] = (4, 4),
+        downsample_factors: Tuple[int, int] = (1, 1),
         ssim_window: int = 15,
         threshold: float = 0.5,
         multiscale_factors: Sequence[int] = (2, 4, 8, 16),
@@ -487,7 +487,10 @@ class TileFusion:
             end = min(total_length, off + length)
             return start, end
 
-        for i_pos in trange(n_pos, desc="register", leave=True):
+        # Build list of adjacent tile pairs (horizontal or vertical neighbors only)
+        adjacent_pairs = []
+        min_overlap = 15  # At least 15 pixels overlap needed
+        for i_pos in range(n_pos):
             for j_pos in range(i_pos + 1, n_pos):
                 phys = (np.array(self._tile_positions[j_pos]) -
                         np.array(self._tile_positions[i_pos]))
@@ -496,63 +499,70 @@ class TileFusion:
 
                 overlap_y = self.Y - abs(dy)
                 overlap_x = self.X - abs(dx)
-                # Need reasonable overlap in BOTH dimensions for reliable registration
-                min_overlap = 50  # At least 50 pixels overlap needed
-                if overlap_y < min_overlap or overlap_x < min_overlap:
-                    continue
+                
+                # Check if tiles are adjacent (one dimension has full overlap, other has partial)
+                is_horizontal_neighbor = (abs(dy) < min_overlap and overlap_x >= min_overlap)
+                is_vertical_neighbor = (abs(dx) < min_overlap and overlap_y >= min_overlap)
+                
+                if is_horizontal_neighbor or is_vertical_neighbor:
+                    adjacent_pairs.append((i_pos, j_pos, dy, dx, overlap_y, overlap_x))
+        
+        if self._debug:
+            print(f"Found {len(adjacent_pairs)} adjacent tile pairs to register")
 
-                bounds_i_y = (max(0, dy), min(self.Y, self.Y + dy))
-                bounds_i_x = (max(0, dx), min(self.X, self.X + dx))
-                bounds_j_y = (max(0, -dy), min(self.Y, self.Y - dy))
-                bounds_j_x = (max(0, -dx), min(self.X, self.X - dx))
+        for i_pos, j_pos, dy, dx, overlap_y, overlap_x in tqdm(adjacent_pairs, desc="register", leave=True):
+            bounds_i_y = (max(0, dy), min(self.Y, self.Y + dy))
+            bounds_i_x = (max(0, dx), min(self.X, self.X + dx))
+            bounds_j_y = (max(0, -dy), min(self.Y, self.Y - dy))
+            bounds_j_x = (max(0, -dx), min(self.X, self.X - dx))
 
-                if bounds_i_y[1] <= bounds_i_y[0] or bounds_i_x[1] <= bounds_i_x[0]:
-                    continue
+            if bounds_i_y[1] <= bounds_i_y[0] or bounds_i_x[1] <= bounds_i_x[0]:
+                continue
 
-                def read_patch(idx, y_bounds, x_bounds):
-                    return self._read_tile_region(
-                        idx,
-                        slice(y_bounds[0], y_bounds[1]),
-                        slice(x_bounds[0], x_bounds[1]),
-                    )
+            def read_patch(idx, y_bounds, x_bounds):
+                return self._read_tile_region(
+                    idx,
+                    slice(y_bounds[0], y_bounds[1]),
+                    slice(x_bounds[0], x_bounds[1]),
+                )
 
-                try:
-                    patch_i = executor.submit(read_patch, i_pos, bounds_i_y, bounds_i_x).result()
-                    patch_j = executor.submit(read_patch, j_pos, bounds_j_y, bounds_j_x).result()
-                except Exception as e:
-                    if self._debug:
-                        print(f"Error reading patches for ({i_pos}, {j_pos}): {e}")
-                    continue
+            try:
+                patch_i = executor.submit(read_patch, i_pos, bounds_i_y, bounds_i_x).result()
+                patch_j = executor.submit(read_patch, j_pos, bounds_j_y, bounds_j_x).result()
+            except Exception as e:
+                if self._debug:
+                    print(f"Error reading patches for ({i_pos}, {j_pos}): {e}")
+                continue
 
-                arr_i = xp.asarray(patch_i)
-                arr_j = xp.asarray(patch_j)
+            arr_i = xp.asarray(patch_i)
+            arr_j = xp.asarray(patch_j)
 
-                reduce_block = (1, df[0], df[1]) if arr_i.ndim == 3 else tuple(df)
-                g1 = block_reduce(arr_i, reduce_block, xp.mean)
-                g2 = block_reduce(arr_j, reduce_block, xp.mean)
+            reduce_block = (1, df[0], df[1]) if arr_i.ndim == 3 else tuple(df)
+            g1 = block_reduce(arr_i, reduce_block, xp.mean)
+            g2 = block_reduce(arr_j, reduce_block, xp.mean)
 
-                try:
-                    shift_ds, ssim_val = self.register_and_score(g1, g2, win_size=sw, debug=self._debug)
-                except Exception as e:
-                    if self._debug:
-                        print(f"Registration failed for ({i_pos}, {j_pos}): {e}")
-                    continue
+            try:
+                shift_ds, ssim_val = self.register_and_score(g1, g2, win_size=sw, debug=self._debug)
+            except Exception as e:
+                if self._debug:
+                    print(f"Registration failed for ({i_pos}, {j_pos}): {e}")
+                continue
 
-                if shift_ds is None:
-                    continue
-                score = float(max(ssim_val, 1e-6))
-                if th != 0.0 and score < th:
-                    continue
+            if shift_ds is None:
+                continue
+            score = float(max(ssim_val, 1e-6))
+            if th != 0.0 and score < th:
+                continue
 
-                dy_s, dx_s = [int(np.round(shift_ds[k] * df[k])) for k in range(2)]
-                max_shift = (100, 100)
+            dy_s, dx_s = [int(np.round(shift_ds[k] * df[k])) for k in range(2)]
+            max_shift = (100, 100)
 
-                if abs(dy_s) > max_shift[0] or abs(dx_s) > max_shift[1]:
-                    if self._debug:
-                        print(f"Dropping link {(i_pos, j_pos)} shift=({dy_s}, {dx_s}) - exceeds max {max_shift}")
-                    continue
+            if abs(dy_s) > max_shift[0] or abs(dx_s) > max_shift[1]:
+                if self._debug:
+                    print(f"Dropping link {(i_pos, j_pos)} shift=({dy_s}, {dx_s}) - exceeds max {max_shift}")
+                continue
 
-                self.pairwise_metrics[(i_pos, j_pos)] = (dy_s, dx_s, round(score, 3))
+            self.pairwise_metrics[(i_pos, j_pos)] = (dy_s, dx_s, round(score, 3))
 
         executor.shutdown(wait=True)
 

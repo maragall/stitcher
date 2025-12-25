@@ -140,6 +140,25 @@ QPushButton#napariButton:disabled {
     color: #8e8e93;
 }
 
+QPushButton#previewButton {
+    background-color: #ff9500;
+    color: white;
+    font-size: 14px;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 20px;
+}
+
+QPushButton#previewButton:hover {
+    background-color: #ff9f0a;
+}
+
+QPushButton#previewButton:disabled {
+    background-color: #c7c7cc;
+    color: #8e8e93;
+}
+
 QProgressBar {
     background-color: #e8e8ed;
     border: none;
@@ -183,6 +202,160 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0px;
 }
 """
+
+
+class PreviewWorker(QThread):
+    """Worker thread for running preview stitching on subset of tiles."""
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(object, object, object)  # color_before, color_after, fused
+    error = pyqtSignal(str)
+
+    def __init__(self, tiff_path, preview_cols, preview_rows, downsample_factor):
+        super().__init__()
+        self.tiff_path = tiff_path
+        self.preview_cols = preview_cols
+        self.preview_rows = preview_rows
+        self.downsample_factor = downsample_factor
+
+    def run(self):
+        try:
+            import tifffile
+            import numpy as np
+            from tilefusion import TileFusion
+            
+            self.progress.emit("Loading metadata...")
+            
+            tf = TileFusion(
+                self.tiff_path, 
+                downsample_factors=(self.downsample_factor, self.downsample_factor)
+            )
+            
+            positions = np.array(tf._tile_positions)
+            unique_x = len(np.unique(np.round(positions[:, 1], -2)))
+            unique_y = len(np.unique(np.round(positions[:, 0], -2)))
+            n_cols, n_rows = unique_x, unique_y
+            
+            self.progress.emit(f"Grid: {n_cols}x{n_rows}, selecting center {self.preview_cols}x{self.preview_rows}")
+            
+            center_col, center_row = n_cols // 2, n_rows // 2
+            half_cols, half_rows = self.preview_cols // 2, self.preview_rows // 2
+            
+            selected_indices = []
+            for row in range(center_row - half_rows, center_row - half_rows + self.preview_rows):
+                for col in range(center_col - half_cols, center_col - half_cols + self.preview_cols):
+                    if 0 <= row < n_rows and 0 <= col < n_cols:
+                        idx = row * n_cols + col
+                        if idx < tf.n_tiles:
+                            selected_indices.append(idx)
+            
+            self.progress.emit(f"Selected {len(selected_indices)} tiles")
+            
+            original_positions = tf._tile_positions.copy()
+            selected_positions = [original_positions[i] for i in selected_indices]
+            
+            tf._tile_positions = selected_positions
+            tf.n_tiles = len(selected_indices)
+            tf.position_dim = tf.n_tiles
+            tf._tile_index_map = selected_indices
+            
+            def patched_read_tile(tile_idx):
+                real_idx = tf._tile_index_map[tile_idx]
+                with tifffile.TiffFile(tf.tiff_path) as tif:
+                    arr = tif.series[real_idx].asarray()
+                if arr.ndim == 2:
+                    arr = arr[np.newaxis, :, :]
+                arr = np.flip(arr, axis=-2)
+                return arr.astype(np.float32)
+
+            def patched_read_tile_region(tile_idx, y_slice, x_slice):
+                real_idx = tf._tile_index_map[tile_idx]
+                with tifffile.TiffFile(tf.tiff_path) as tif:
+                    arr = tif.series[real_idx].asarray()
+                if arr.ndim == 2:
+                    arr = arr[np.newaxis, :, :]
+                arr = np.flip(arr, axis=-2)
+                return arr[:, y_slice, x_slice].astype(np.float32)
+            
+            tf._read_tile = patched_read_tile
+            tf._read_tile_region = patched_read_tile_region
+            
+            self.progress.emit("Running registration...")
+            tf.refine_tile_positions_with_cross_correlation()
+            self.progress.emit(f"Found {len(tf.pairwise_metrics)} pairs")
+            
+            tf.optimize_shifts(method="TWO_ROUND_ITERATIVE", rel_thresh=0.5, abs_thresh=2.0, iterative=True)
+            global_offsets = tf.global_offsets
+            
+            pixel_size = tf._pixel_size
+            min_y = min(p[0] for p in selected_positions)
+            min_x = min(p[1] for p in selected_positions)
+            max_y = max(p[0] for p in selected_positions) + tf.Y * pixel_size[0]
+            max_x = max(p[1] for p in selected_positions) + tf.X * pixel_size[1]
+            
+            h = int((max_y - min_y) / pixel_size[0]) + 100
+            w = int((max_x - min_x) / pixel_size[1]) + 100
+            
+            self.progress.emit(f"Creating preview images ({h}x{w})...")
+            
+            color_before = np.zeros((h, w, 3), dtype=np.uint8)
+            color_after = np.zeros((h, w, 3), dtype=np.uint8)
+            fused = np.zeros((h, w), dtype=np.float32)
+            weight = np.zeros((h, w), dtype=np.float32)
+            
+            checkerboard_colors = [
+                (255, 100, 100), (100, 255, 100), (100, 100, 255),
+                (255, 255, 100), (255, 100, 255), (100, 255, 255),
+            ]
+            
+            def get_color(row, col):
+                return checkerboard_colors[((row % 2) * 3 + (col % 3)) % 6]
+            
+            with tifffile.TiffFile(self.tiff_path) as tif:
+                for i, (pos, orig_idx) in enumerate(zip(selected_positions, selected_indices)):
+                    arr = tif.series[orig_idx].asarray()
+                    arr = np.flip(arr, axis=0)
+                    arr_raw = arr.astype(np.float32)
+                    
+                    p1, p99 = np.percentile(arr_raw, [2, 98])
+                    arr_norm = np.clip((arr_raw - p1) / (p99 - p1 + 1e-6), 0, 1)
+                    
+                    row, col = i // self.preview_cols, i % self.preview_cols
+                    color = get_color(row, col)
+                    
+                    oy_before = int(round((pos[0] - min_y) / pixel_size[0]))
+                    ox_before = int(round((pos[1] - min_x) / pixel_size[1]))
+                    oy_after = oy_before + int(global_offsets[i][0])
+                    ox_after = ox_before + int(global_offsets[i][1])
+                    
+                    th, tw = arr_norm.shape
+                    
+                    # BEFORE
+                    y1, y2 = max(0, oy_before), min(oy_before + th, h)
+                    x1, x2 = max(0, ox_before), min(ox_before + tw, w)
+                    if y2 > y1 and x2 > x1:
+                        tile_h, tile_w = y2 - y1, x2 - x1
+                        for c in range(3):
+                            color_before[y1:y2, x1:x2, c] = (arr_norm[:tile_h, :tile_w] * color[c]).astype(np.uint8)
+                    
+                    # AFTER
+                    y1, y2 = max(0, oy_after), min(oy_after + th, h)
+                    x1, x2 = max(0, ox_after), min(ox_after + tw, w)
+                    if y2 > y1 and x2 > x1:
+                        tile_h, tile_w = y2 - y1, x2 - x1
+                        for c in range(3):
+                            color_after[y1:y2, x1:x2, c] = (arr_norm[:tile_h, :tile_w] * color[c]).astype(np.uint8)
+                        fused[y1:y2, x1:x2] += arr_raw[:tile_h, :tile_w]
+                        weight[y1:y2, x1:x2] += 1.0
+            
+            weight = np.maximum(weight, 1.0)
+            fused = fused / weight
+            
+            self.progress.emit("Preview ready!")
+            self.finished.emit(color_before, color_after, fused)
+            
+        except Exception as e:
+            import traceback
+            self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
 
 
 class FusionWorker(QThread):
@@ -485,6 +658,37 @@ class StitcherGUI(QMainWindow):
         
         layout.addWidget(reg_group)
 
+        # Preview section
+        preview_group = QGroupBox("Preview")
+        preview_layout = QHBoxLayout(preview_group)
+        
+        preview_layout.addWidget(QLabel("Grid size:"))
+        
+        self.preview_cols_spin = QSpinBox()
+        self.preview_cols_spin.setRange(2, 15)
+        self.preview_cols_spin.setValue(5)
+        self.preview_cols_spin.setFixedWidth(60)
+        preview_layout.addWidget(self.preview_cols_spin)
+        
+        preview_layout.addWidget(QLabel("x"))
+        
+        self.preview_rows_spin = QSpinBox()
+        self.preview_rows_spin.setRange(2, 15)
+        self.preview_rows_spin.setValue(5)
+        self.preview_rows_spin.setFixedWidth(60)
+        preview_layout.addWidget(self.preview_rows_spin)
+        
+        preview_layout.addStretch()
+        
+        self.preview_button = QPushButton("👁 Preview")
+        self.preview_button.setObjectName("previewButton")
+        self.preview_button.setCursor(Qt.PointingHandCursor)
+        self.preview_button.clicked.connect(self.run_preview)
+        self.preview_button.setEnabled(False)
+        preview_layout.addWidget(self.preview_button)
+        
+        layout.addWidget(preview_group)
+
         # Run button
         self.run_button = QPushButton("▶  Run Stitching")
         self.run_button.setObjectName("runButton")
@@ -524,6 +728,7 @@ class StitcherGUI(QMainWindow):
     def on_file_dropped(self, file_path):
         self.log(f"Selected: {file_path}")
         self.run_button.setEnabled(True)
+        self.preview_button.setEnabled(True)
 
     def on_registration_toggled(self, checked):
         self.downsample_widget.setVisible(checked)
@@ -577,6 +782,51 @@ class StitcherGUI(QMainWindow):
 
     def on_fusion_error(self, error_msg):
         self.progress_bar.setVisible(False)
+        self.run_button.setEnabled(True)
+        self.log(f"\n✗ {error_msg}")
+
+    def run_preview(self):
+        if not self.drop_area.file_path:
+            return
+
+        self.preview_button.setEnabled(False)
+        self.run_button.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.log_text.clear()
+        self.log("Starting preview...")
+        
+        self.preview_worker = PreviewWorker(
+            self.drop_area.file_path,
+            self.preview_cols_spin.value(),
+            self.preview_rows_spin.value(),
+            self.downsample_spin.value()
+        )
+        self.preview_worker.progress.connect(self.log)
+        self.preview_worker.finished.connect(self.on_preview_finished)
+        self.preview_worker.error.connect(self.on_preview_error)
+        self.preview_worker.start()
+
+    def on_preview_finished(self, color_before, color_after, fused):
+        self.progress_bar.setVisible(False)
+        self.preview_button.setEnabled(True)
+        self.run_button.setEnabled(True)
+        
+        self.log("Opening napari with before/after comparison...")
+        
+        try:
+            import napari
+            viewer = napari.Viewer()
+            viewer.add_image(color_before, name='BEFORE registration (colored)', rgb=True)
+            viewer.add_image(color_after, name='AFTER registration (colored)', rgb=True, visible=False)
+            if fused is not None:
+                viewer.add_image(fused, name='Fused result', colormap='gray', visible=False)
+            napari.run()
+        except Exception as e:
+            self.log(f"Error opening Napari: {e}")
+
+    def on_preview_error(self, error_msg):
+        self.progress_bar.setVisible(False)
+        self.preview_button.setEnabled(True)
         self.run_button.setEnabled(True)
         self.log(f"\n✗ {error_msg}")
 
