@@ -297,7 +297,7 @@ class TileFusion:
             else self.tiff_path.parent / f"{self.tiff_path.stem}_fused.ome.zarr"
         )
 
-        # Detect format: Zarr, SQUID folder, or OME-TIFF file
+        # Detect format: Zarr, Squid folder, or OME-TIFF file
         self._is_zarr_format = False
         self._is_squid_format = False
         if self.tiff_path.is_dir():
@@ -383,7 +383,7 @@ class TileFusion:
                     self._tile_positions.append((0.0, 0.0))
 
     def _load_squid_metadata(self) -> None:
-        """Load metadata from SQUID folder format (individual TIFFs + coordinates.csv)."""
+        """Load metadata from Squid folder format (individual TIFFs + coordinates.csv)."""
         import pandas as pd
         import json
 
@@ -637,7 +637,7 @@ class TileFusion:
         return arr.astype(np.float32)
 
     def _read_squid_tile_all_channels(self, tile_idx: int) -> np.ndarray:
-        """Read all channels of a tile from SQUID folder format."""
+        """Read all channels of a tile from Squid folder format."""
         fov = self._squid_fov_indices[tile_idx]
 
         channels = []
@@ -653,7 +653,7 @@ class TileFusion:
         return stacked.astype(np.float32)
 
     def _read_squid_tile(self, tile_idx: int, channel_idx: int = None) -> np.ndarray:
-        """Read a single channel of a tile from SQUID folder format."""
+        """Read a single channel of a tile from Squid folder format."""
         if channel_idx is None:
             channel_idx = self.channel_to_use
 
