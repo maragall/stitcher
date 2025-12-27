@@ -1,0 +1,3 @@
+"""
+TileFusion test suite.
+"""

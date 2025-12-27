@@ -6,6 +6,13 @@ Stitcher GUI - A simple interface for tile fusion of OME-TIFF files.
 import sys
 import os
 from pathlib import Path
+
+# Fix Qt plugin path for conda environments on macOS
+if sys.platform == "darwin" and "CONDA_PREFIX" in os.environ:
+    conda_plugins = Path(os.environ["CONDA_PREFIX"]) / "plugins"
+    if conda_plugins.exists() and "QT_PLUGIN_PATH" not in os.environ:
+        os.environ["QT_PLUGIN_PATH"] = str(conda_plugins)
+
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -22,6 +29,8 @@ from PyQt5.QtWidgets import (
     QTextEdit,
     QFrame,
     QGraphicsDropShadowEffect,
+    QComboBox,
+    QSlider,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPropertyAnimation, QEasingCurve
 from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QColor, QPalette, QLinearGradient
@@ -432,15 +441,22 @@ class FusionWorker(QThread):
             output_path = (
                 Path(self.tiff_path).parent / f"{Path(self.tiff_path).stem}_fused.ome.zarr"
             )
+            # Multi-region output folder
+            output_folder = Path(self.tiff_path).parent / f"{Path(self.tiff_path).stem}_fused"
 
-            # Remove existing output if present
+            # Remove existing outputs if present
             if output_path.exists():
                 shutil.rmtree(output_path)
+            if output_folder.exists():
+                shutil.rmtree(output_folder)
 
             # Also remove metrics if not doing registration
             metrics_path = Path(self.tiff_path).parent / "metrics.json"
             if metrics_path.exists():
                 metrics_path.unlink()
+            # Remove multi-region metrics
+            for m in Path(self.tiff_path).parent.glob("metrics_*.json"):
+                m.unlink()
 
             step_start = time.time()
             tf = TileFusion(
@@ -451,6 +467,17 @@ class FusionWorker(QThread):
             )
             load_time = time.time() - step_start
             self.progress.emit(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each) [{load_time:.1f}s]")
+
+            # Check for multi-region dataset
+            if len(tf._unique_regions) > 1:
+                self.progress.emit(f"Multi-region dataset: {tf._unique_regions}")
+                tf.stitch_all_regions()
+                # Output folder for multi-region
+                output_folder = Path(self.tiff_path).parent / f"{Path(self.tiff_path).stem}_fused"
+                elapsed_time = time.time() - start_time
+                self.output_path = str(output_folder)
+                self.finished.emit(str(output_folder), elapsed_time)
+                return
 
             # Registration step
             step_start = time.time()
@@ -654,11 +681,13 @@ class StitcherGUI(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Tile Stitcher")
+        self.setWindowTitle("Stitcher")
         self.setMinimumSize(500, 600)
 
         self.worker = None
         self.output_path = None
+        self.regions = []  # List of region names for multi-region outputs
+        self.is_multi_region = False
 
         self.setup_ui()
 
@@ -670,16 +699,10 @@ class StitcherGUI(QMainWindow):
         layout.setContentsMargins(24, 24, 24, 24)
 
         # Title
-        title = QLabel("Tile Stitcher")
+        title = QLabel("Stitcher")
         title.setObjectName("title")
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
-
-        # Subtitle
-        subtitle = QLabel("GPU-accelerated tile fusion for OME-TIFF microscopy data")
-        subtitle.setObjectName("subtitle")
-        subtitle.setAlignment(Qt.AlignCenter)
-        layout.addWidget(subtitle)
 
         # Drop area
         self.drop_area = DropArea()
@@ -799,6 +822,27 @@ class StitcherGUI(QMainWindow):
         self.log_text.setPlaceholderText("Log output will appear here...")
         layout.addWidget(self.log_text)
 
+        # Region selection (hidden by default, shown for multi-region outputs)
+        self.region_widget = QWidget()
+        self.region_widget.setVisible(False)
+        region_layout = QHBoxLayout(self.region_widget)
+        region_layout.setContentsMargins(0, 0, 0, 0)
+
+        region_layout.addWidget(QLabel("Region:"))
+
+        self.region_combo = QComboBox()
+        self.region_combo.setMinimumWidth(100)
+        self.region_combo.currentIndexChanged.connect(self._on_region_combo_changed)
+        region_layout.addWidget(self.region_combo)
+
+        self.region_slider = QSlider(Qt.Horizontal)
+        self.region_slider.setMinimum(0)
+        self.region_slider.setMaximum(0)
+        self.region_slider.valueChanged.connect(self._on_region_slider_changed)
+        region_layout.addWidget(self.region_slider)
+
+        layout.addWidget(self.region_widget)
+
         # Open in Napari button
         self.napari_button = QPushButton("🔬  Open in Napari")
         self.napari_button.setObjectName("napariButton")
@@ -864,6 +908,27 @@ class StitcherGUI(QMainWindow):
         self.run_button.setEnabled(True)
         self.napari_button.setEnabled(True)
 
+        # Check if this is a multi-region output folder
+        output_dir = Path(output_path)
+        zarr_subdirs = sorted(output_dir.glob("*.ome.zarr"))
+        if zarr_subdirs:
+            # Multi-region output
+            self.is_multi_region = True
+            self.regions = [d.stem.replace(".ome", "") for d in zarr_subdirs]
+            self.region_combo.blockSignals(True)
+            self.region_combo.clear()
+            self.region_combo.addItems(self.regions)
+            self.region_combo.blockSignals(False)
+            self.region_slider.setMaximum(len(self.regions) - 1)
+            self.region_slider.setValue(0)
+            self.region_widget.setVisible(True)
+            self.log(f"Found {len(self.regions)} regions: {', '.join(self.regions)}")
+        else:
+            # Single output
+            self.is_multi_region = False
+            self.regions = []
+            self.region_widget.setVisible(False)
+
         minutes = int(elapsed_time // 60)
         seconds = elapsed_time % 60
         time_str = f"{minutes}m {seconds:.1f}s" if minutes > 0 else f"{seconds:.1f}s"
@@ -923,64 +988,206 @@ class StitcherGUI(QMainWindow):
         self.run_button.setEnabled(True)
         self.log(f"\n✗ {error_msg}")
 
+    def _on_region_combo_changed(self, index):
+        """Sync slider when dropdown changes."""
+        self.region_slider.blockSignals(True)
+        self.region_slider.setValue(index)
+        self.region_slider.blockSignals(False)
+
+    def _on_region_slider_changed(self, value):
+        """Sync dropdown when slider changes."""
+        self.region_combo.blockSignals(True)
+        self.region_combo.setCurrentIndex(value)
+        self.region_combo.blockSignals(False)
+
     def open_in_napari(self):
         if not self.output_path:
             return
 
-        self.log(f"Opening in Napari: {self.output_path}")
+        # Determine the actual zarr path to open
+        if self.is_multi_region and self.regions:
+            selected_region = self.region_combo.currentText()
+            zarr_path = Path(self.output_path) / f"{selected_region}.ome.zarr"
+            self.log(f"Opening region '{selected_region}' in Napari: {zarr_path}")
+        else:
+            zarr_path = Path(self.output_path)
+            self.log(f"Opening in Napari: {self.output_path}")
 
         try:
             import napari
-            from ome_zarr.io import parse_url
-            from ome_zarr.reader import Reader
+            import tensorstore as ts
+            import numpy as np
 
-            reader = Reader(parse_url(self.output_path))
-            nodes = list(reader())
+            viewer = napari.Viewer()
+            output_path = zarr_path
 
-            if nodes:
-                data = nodes[0].data
-                viewer = napari.Viewer()
+            # Find all scale levels
+            scale_dirs = sorted(output_path.glob("scale*"))
+            pyramid_data = []
 
-                # Check number of channels from shape (t, c, y, x)
-                n_channels = data[0].shape[1] if len(data[0].shape) >= 4 else 1
+            for scale_dir in scale_dirs:
+                image_path = scale_dir / "image"
+                if image_path.exists():
+                    store = ts.open(
+                        {
+                            "driver": "zarr3",
+                            "kvstore": {"driver": "file", "path": str(image_path)},
+                        }
+                    ).result()
+                    pyramid_data.append(store)
 
-                if n_channels > 1:
-                    # Get channel names if available (from SQUID format)
-                    channel_names = None
-                    try:
-                        from tilefusion import TileFusion
+            if not pyramid_data:
+                self.log("No image data found in output")
+                return
 
-                        tf = TileFusion(self.drop_area.file_path)
-                        if hasattr(tf, "_squid_channels"):
-                            channel_names = [ch.replace("_", " ") for ch in tf._squid_channels]
-                    except:
-                        pass
+            # Get shape from first level: (t, c, z, y, x) or (t, c, y, x)
+            shape = pyramid_data[0].shape
+            is_5d = len(shape) == 5
+            n_channels = shape[1] if len(shape) >= 4 else 1
+            n_z = shape[2] if is_5d else 1
+            middle_z = n_z // 2
 
-                    # Add each channel as separate layer
-                    channel_colors = ["blue", "green", "yellow", "red", "magenta", "cyan"]
-                    for c in range(n_channels):
-                        # Extract channel from each pyramid level
-                        channel_data = [d[:, c : c + 1, :, :] for d in data]
-                        name = (
-                            channel_names[c]
-                            if channel_names and c < len(channel_names)
-                            else f"Channel {c}"
-                        )
-                        viewer.add_image(
-                            channel_data,
-                            multiscale=True,
-                            name=name,
-                            colormap=channel_colors[c % len(channel_colors)],
-                            blending="additive",
-                        )
+            # Get channel names if available
+            channel_names = None
+            try:
+                from tilefusion import TileFusion
+
+                tf = TileFusion(self.drop_area.file_path)
+                if "channel_names" in tf._metadata:
+                    channel_names = [ch.replace("_", " ") for ch in tf._metadata["channel_names"]]
+            except:
+                pass
+
+            channel_colors = ["blue", "green", "yellow", "red", "magenta", "cyan"]
+
+            def auto_contrast(data, pmax=99.9):
+                """Compute contrast limits optimized for fluorescence microscopy.
+
+                Uses mode-based background detection: finds the histogram peak
+                (background) and sets minimum above it. This effectively
+                suppresses background while preserving signal.
+                """
+                # Estimate background using histogram mode
+                # Sample data for speed if large
+                flat = data.ravel()
+                if len(flat) > 100000:
+                    flat = np.random.choice(flat, 100000, replace=False)
+
+                # Find histogram peak (mode) - this is the background
+                hist, bin_edges = np.histogram(flat, bins=256)
+                mode_idx = np.argmax(hist)
+                mode_val = (bin_edges[mode_idx] + bin_edges[mode_idx + 1]) / 2
+
+                # Estimate background noise (std of values below median)
+                background_pixels = flat[flat <= np.median(flat)]
+                if len(background_pixels) > 0:
+                    bg_std = np.std(background_pixels)
                 else:
-                    viewer.add_image(
-                        data,
-                        multiscale=True,
-                        name=Path(self.output_path).stem,
-                        contrast_limits=[0, 65535],
+                    bg_std = mode_val * 0.1
+
+                # Set min to mode + 2*std (above background noise)
+                lo = mode_val + 2 * bg_std
+                hi = np.percentile(data, pmax)
+
+                # Ensure minimum range
+                if hi - lo < 10:
+                    hi = lo + 100
+                return [float(lo), float(hi)]
+
+            def dtype_range(dtype):
+                """Get valid range for a numpy dtype."""
+                if np.issubdtype(dtype, np.integer):
+                    info = np.iinfo(dtype)
+                    return [info.min, info.max]
+                elif np.issubdtype(dtype, np.floating):
+                    return [0.0, 1.0]
+                return [0, 65535]
+
+            # Use lowest resolution level for fast auto-contrast computation
+            lowest_res = pyramid_data[-1]
+
+            # Check if we have multiple z or t
+            has_zt_dims = is_5d and (n_z > 1 or shape[0] > 1)  # shape[0] is T
+
+            if has_zt_dims:
+                # Load full 5D data for z/t sliders (use only scale0 for memory)
+                store = pyramid_data[0]
+                self.log(f"Loading full volume: T={shape[0]}, C={n_channels}, Z={n_z}")
+
+                for c in range(n_channels):
+                    # Read full t, z for this channel: (T, Z, Y, X)
+                    data = store[:, c, :, :, :].read().result()
+                    data = np.asarray(data)
+
+                    # Auto-contrast from middle slice
+                    mid_t, mid_z = data.shape[0] // 2, data.shape[1] // 2
+                    contrast = auto_contrast(data[mid_t, mid_z])
+
+                    name = (
+                        channel_names[c]
+                        if channel_names and c < len(channel_names)
+                        else f"Channel {c}"
                     )
-                napari.run()
+                    layer = viewer.add_image(
+                        data,
+                        name=name,
+                        colormap=channel_colors[c % len(channel_colors)],
+                        blending="additive",
+                        contrast_limits=contrast,
+                    )
+                    layer.contrast_limits_range = dtype_range(data.dtype)
+
+                # Set axis labels for sliders after adding layers
+                viewer.dims.axis_labels = ("t", "z", "y", "x")
+            elif n_channels > 1:
+                for c in range(n_channels):
+                    # Read channel data from each pyramid level
+                    channel_pyramid = []
+                    for store in pyramid_data:
+                        if is_5d:
+                            data = store[0, c, middle_z, :, :].read().result()
+                        else:
+                            data = store[0, c, :, :].read().result()
+                        channel_pyramid.append(np.asarray(data))
+
+                    # Auto-contrast from lowest res level
+                    contrast = auto_contrast(channel_pyramid[-1])
+
+                    name = (
+                        channel_names[c]
+                        if channel_names and c < len(channel_names)
+                        else f"Channel {c}"
+                    )
+                    layer = viewer.add_image(
+                        channel_pyramid,
+                        multiscale=True,
+                        name=name,
+                        colormap=channel_colors[c % len(channel_colors)],
+                        blending="additive",
+                        contrast_limits=contrast,
+                    )
+                    layer.contrast_limits_range = dtype_range(channel_pyramid[-1].dtype)
+            else:
+                # Single channel
+                single_pyramid = []
+                for store in pyramid_data:
+                    if is_5d:
+                        data = store[0, 0, middle_z, :, :].read().result()
+                    else:
+                        data = store[0, 0, :, :].read().result()
+                    single_pyramid.append(np.asarray(data))
+
+                contrast = auto_contrast(single_pyramid[-1])
+
+                layer = viewer.add_image(
+                    single_pyramid,
+                    multiscale=True,
+                    name=output_path.stem,
+                    contrast_limits=contrast,
+                )
+                layer.contrast_limits_range = dtype_range(single_pyramid[-1].dtype)
+
+            napari.run()
         except Exception as e:
             self.log(f"Error opening Napari: {e}")
 
