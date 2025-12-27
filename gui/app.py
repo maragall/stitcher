@@ -29,6 +29,8 @@ from PyQt5.QtWidgets import (
     QTextEdit,
     QFrame,
     QGraphicsDropShadowEffect,
+    QComboBox,
+    QSlider,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPropertyAnimation, QEasingCurve
 from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QColor, QPalette, QLinearGradient
@@ -439,15 +441,22 @@ class FusionWorker(QThread):
             output_path = (
                 Path(self.tiff_path).parent / f"{Path(self.tiff_path).stem}_fused.ome.zarr"
             )
+            # Multi-region output folder
+            output_folder = Path(self.tiff_path).parent / f"{Path(self.tiff_path).stem}_fused"
 
-            # Remove existing output if present
+            # Remove existing outputs if present
             if output_path.exists():
                 shutil.rmtree(output_path)
+            if output_folder.exists():
+                shutil.rmtree(output_folder)
 
             # Also remove metrics if not doing registration
             metrics_path = Path(self.tiff_path).parent / "metrics.json"
             if metrics_path.exists():
                 metrics_path.unlink()
+            # Remove multi-region metrics
+            for m in Path(self.tiff_path).parent.glob("metrics_*.json"):
+                m.unlink()
 
             step_start = time.time()
             tf = TileFusion(
@@ -458,6 +467,17 @@ class FusionWorker(QThread):
             )
             load_time = time.time() - step_start
             self.progress.emit(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each) [{load_time:.1f}s]")
+
+            # Check for multi-region dataset
+            if len(tf._unique_regions) > 1:
+                self.progress.emit(f"Multi-region dataset: {tf._unique_regions}")
+                tf.stitch_all_regions()
+                # Output folder for multi-region
+                output_folder = Path(self.tiff_path).parent / f"{Path(self.tiff_path).stem}_fused"
+                elapsed_time = time.time() - start_time
+                self.output_path = str(output_folder)
+                self.finished.emit(str(output_folder), elapsed_time)
+                return
 
             # Registration step
             step_start = time.time()
@@ -666,6 +686,8 @@ class StitcherGUI(QMainWindow):
 
         self.worker = None
         self.output_path = None
+        self.regions = []  # List of region names for multi-region outputs
+        self.is_multi_region = False
 
         self.setup_ui()
 
@@ -800,6 +822,27 @@ class StitcherGUI(QMainWindow):
         self.log_text.setPlaceholderText("Log output will appear here...")
         layout.addWidget(self.log_text)
 
+        # Region selection (hidden by default, shown for multi-region outputs)
+        self.region_widget = QWidget()
+        self.region_widget.setVisible(False)
+        region_layout = QHBoxLayout(self.region_widget)
+        region_layout.setContentsMargins(0, 0, 0, 0)
+
+        region_layout.addWidget(QLabel("Region:"))
+
+        self.region_combo = QComboBox()
+        self.region_combo.setMinimumWidth(100)
+        self.region_combo.currentIndexChanged.connect(self._on_region_combo_changed)
+        region_layout.addWidget(self.region_combo)
+
+        self.region_slider = QSlider(Qt.Horizontal)
+        self.region_slider.setMinimum(0)
+        self.region_slider.setMaximum(0)
+        self.region_slider.valueChanged.connect(self._on_region_slider_changed)
+        region_layout.addWidget(self.region_slider)
+
+        layout.addWidget(self.region_widget)
+
         # Open in Napari button
         self.napari_button = QPushButton("🔬  Open in Napari")
         self.napari_button.setObjectName("napariButton")
@@ -865,6 +908,27 @@ class StitcherGUI(QMainWindow):
         self.run_button.setEnabled(True)
         self.napari_button.setEnabled(True)
 
+        # Check if this is a multi-region output folder
+        output_dir = Path(output_path)
+        zarr_subdirs = sorted(output_dir.glob("*.ome.zarr"))
+        if zarr_subdirs:
+            # Multi-region output
+            self.is_multi_region = True
+            self.regions = [d.stem.replace(".ome", "") for d in zarr_subdirs]
+            self.region_combo.blockSignals(True)
+            self.region_combo.clear()
+            self.region_combo.addItems(self.regions)
+            self.region_combo.blockSignals(False)
+            self.region_slider.setMaximum(len(self.regions) - 1)
+            self.region_slider.setValue(0)
+            self.region_widget.setVisible(True)
+            self.log(f"Found {len(self.regions)} regions: {', '.join(self.regions)}")
+        else:
+            # Single output
+            self.is_multi_region = False
+            self.regions = []
+            self.region_widget.setVisible(False)
+
         minutes = int(elapsed_time // 60)
         seconds = elapsed_time % 60
         time_str = f"{minutes}m {seconds:.1f}s" if minutes > 0 else f"{seconds:.1f}s"
@@ -924,11 +988,30 @@ class StitcherGUI(QMainWindow):
         self.run_button.setEnabled(True)
         self.log(f"\n✗ {error_msg}")
 
+    def _on_region_combo_changed(self, index):
+        """Sync slider when dropdown changes."""
+        self.region_slider.blockSignals(True)
+        self.region_slider.setValue(index)
+        self.region_slider.blockSignals(False)
+
+    def _on_region_slider_changed(self, value):
+        """Sync dropdown when slider changes."""
+        self.region_combo.blockSignals(True)
+        self.region_combo.setCurrentIndex(value)
+        self.region_combo.blockSignals(False)
+
     def open_in_napari(self):
         if not self.output_path:
             return
 
-        self.log(f"Opening in Napari: {self.output_path}")
+        # Determine the actual zarr path to open
+        if self.is_multi_region and self.regions:
+            selected_region = self.region_combo.currentText()
+            zarr_path = Path(self.output_path) / f"{selected_region}.ome.zarr"
+            self.log(f"Opening region '{selected_region}' in Napari: {zarr_path}")
+        else:
+            zarr_path = Path(self.output_path)
+            self.log(f"Opening in Napari: {self.output_path}")
 
         try:
             import napari
@@ -936,7 +1019,7 @@ class StitcherGUI(QMainWindow):
             import numpy as np
 
             viewer = napari.Viewer()
-            output_path = Path(self.output_path)
+            output_path = zarr_path
 
             # Find all scale levels
             scale_dirs = sorted(output_path.glob("scale*"))
@@ -957,9 +1040,12 @@ class StitcherGUI(QMainWindow):
                 self.log("No image data found in output")
                 return
 
-            # Get shape from first level: (t, c, y, x)
+            # Get shape from first level: (t, c, z, y, x) or (t, c, y, x)
             shape = pyramid_data[0].shape
+            is_5d = len(shape) == 5
             n_channels = shape[1] if len(shape) >= 4 else 1
+            n_z = shape[2] if is_5d else 1
+            middle_z = n_z // 2
 
             # Get channel names if available
             channel_names = None
@@ -1025,7 +1111,10 @@ class StitcherGUI(QMainWindow):
                     # Read channel data from each pyramid level
                     channel_pyramid = []
                     for store in pyramid_data:
-                        data = store[0, c, :, :].read().result()
+                        if is_5d:
+                            data = store[0, c, middle_z, :, :].read().result()
+                        else:
+                            data = store[0, c, :, :].read().result()
                         channel_pyramid.append(np.asarray(data))
 
                     # Auto-contrast from lowest res level
@@ -1049,7 +1138,10 @@ class StitcherGUI(QMainWindow):
                 # Single channel
                 single_pyramid = []
                 for store in pyramid_data:
-                    data = store[0, 0, :, :].read().result()
+                    if is_5d:
+                        data = store[0, 0, middle_z, :, :].read().result()
+                    else:
+                        data = store[0, 0, :, :].read().result()
                     single_pyramid.append(np.asarray(data))
 
                 contrast = auto_contrast(single_pyramid[-1])
