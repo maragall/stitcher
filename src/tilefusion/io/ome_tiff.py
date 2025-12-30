@@ -5,7 +5,7 @@ Reads tiled OME-TIFF files with stage position metadata.
 """
 
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Any, Dict, Optional
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -31,8 +31,25 @@ def load_ome_tiff_metadata(tiff_path: Path) -> Dict[str, Any]:
         - channels: int
         - pixel_size: (py, px)
         - tile_positions: list of (y, x) tuples
+        - tiff_handle: tifffile.TiffFile
+            Open TIFF file handle kept for fast repeated access. The caller is
+            responsible for closing this handle by calling ``tiff_handle.close()``
+            when it is no longer needed to avoid resource leaks. The handle
+            remains valid until it is explicitly closed, or until a higher-level
+            context manager (if used) closes it on your behalf.
+
+    Note
+    ----
+    Breaking change: Now returns an open ``tiff_handle`` that requires
+    explicit cleanup. Previously this function returned only data without
+    keeping file handles open. Callers using this function directly must
+    now call ``metadata['tiff_handle'].close()`` when done, or use
+    ``TileFusion`` which handles cleanup automatically.
     """
-    with tifffile.TiffFile(tiff_path) as tif:
+    # Keep file handle open for fast repeated access
+    tif = tifffile.TiffFile(tiff_path)
+
+    try:
         if not tif.ome_metadata:
             raise ValueError("TIFF file does not contain OME metadata")
 
@@ -66,19 +83,28 @@ def load_ome_tiff_metadata(tiff_path: Path) -> Dict[str, Any]:
             else:
                 tile_positions.append((0.0, 0.0))
 
-    return {
-        "n_tiles": n_tiles,
-        "n_series": n_series,
-        "shape": (Y, X),
-        "channels": channels,
-        "time_dim": time_dim,
-        "position_dim": position_dim,
-        "pixel_size": pixel_size,
-        "tile_positions": tile_positions,
-    }
+        return {
+            "n_tiles": n_tiles,
+            "n_series": n_series,
+            "shape": (Y, X),
+            "channels": channels,
+            "time_dim": time_dim,
+            "position_dim": position_dim,
+            "pixel_size": pixel_size,
+            "tile_positions": tile_positions,
+            "tiff_handle": tif,
+        }
+    except Exception:
+        # Ensure handle is closed on any error to prevent resource leaks.
+        # This includes IndexError (empty series/images in malformed files),
+        # AttributeError, KeyError, etc. The exception is still re-raised.
+        tif.close()
+        raise
 
 
-def read_ome_tiff_tile(tiff_path: Path, tile_idx: int) -> np.ndarray:
+def read_ome_tiff_tile(
+    tiff_path: Path, tile_idx: int, tiff_handle: Optional[tifffile.TiffFile] = None
+) -> np.ndarray:
     """
     Read a single tile from OME-TIFF (all channels).
 
@@ -88,14 +114,34 @@ def read_ome_tiff_tile(tiff_path: Path, tile_idx: int) -> np.ndarray:
         Path to the OME-TIFF file.
     tile_idx : int
         Index of the tile to read.
+    tiff_handle : TiffFile, optional
+        Cached TiffFile handle for faster access. For repeated reads,
+        keep the handle open and pass it here, or use TileFusion which
+        manages this automatically.
 
     Returns
     -------
     arr : ndarray of shape (C, Y, X)
         Tile data as float32.
+
+    Warning
+    -------
+    A single TiffFile handle is NOT thread-safe for concurrent reads.
+    On Windows, seek+read operations are not atomic, leading to data
+    corruption. Use separate handles per thread (TileFusion handles
+    this automatically via thread-local storage).
+
+    Note
+    ----
+    When a ``tiff_handle`` is provided, the caller remains responsible for
+    closing it even if this function raises an exception. For best performance
+    with repeated reads, keep the handle open and reuse it across calls.
     """
-    with tifffile.TiffFile(tiff_path) as tif:
-        arr = tif.series[tile_idx].asarray()
+    if tiff_handle is not None:
+        arr = tiff_handle.series[tile_idx].asarray()
+    else:
+        with tifffile.TiffFile(tiff_path) as tif:
+            arr = tif.series[tile_idx].asarray()
     if arr.ndim == 2:
         arr = arr[np.newaxis, :, :]
     # Flip along Y axis to correct orientation
@@ -108,6 +154,7 @@ def read_ome_tiff_region(
     tile_idx: int,
     y_slice: slice,
     x_slice: slice,
+    tiff_handle: Optional[tifffile.TiffFile] = None,
 ) -> np.ndarray:
     """
     Read a region of a tile from OME-TIFF.
@@ -120,14 +167,34 @@ def read_ome_tiff_region(
         Index of the tile.
     y_slice, x_slice : slice
         Region to read.
+    tiff_handle : TiffFile, optional
+        Cached TiffFile handle for faster access. For repeated reads,
+        keep the handle open and pass it here, or use TileFusion which
+        manages this automatically.
 
     Returns
     -------
     arr : ndarray of shape (C, h, w)
         Tile region as float32.
+
+    Warning
+    -------
+    A single TiffFile handle is NOT thread-safe for concurrent reads.
+    On Windows, seek+read operations are not atomic, leading to data
+    corruption. Use separate handles per thread (TileFusion handles
+    this automatically via thread-local storage).
+
+    Note
+    ----
+    When a ``tiff_handle`` is provided, the caller remains responsible for
+    closing it even if this function raises an exception. For best performance
+    with repeated reads, keep the handle open and reuse it across calls.
     """
-    with tifffile.TiffFile(tiff_path) as tif:
-        arr = tif.series[tile_idx].asarray()
+    if tiff_handle is not None:
+        arr = tiff_handle.series[tile_idx].asarray()
+    else:
+        with tifffile.TiffFile(tiff_path) as tif:
+            arr = tif.series[tile_idx].asarray()
     if arr.ndim == 2:
         arr = arr[np.newaxis, :, :]
     # Flip along Y axis to correct orientation

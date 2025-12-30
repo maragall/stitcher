@@ -85,6 +85,34 @@ convert-to-zarr path/to/folder -o output.zarr
 ### Output
 - **OME-NGFF Zarr v3**: With multiscale pyramids for efficient visualization
 
+## Thread Safety
+
+TileFusion uses thread-local file handles for safe concurrent tile reads. Each thread gets its own `TiffFile` handle, avoiding race conditions that occur when multiple threads share a single file descriptor.
+
+### Recommended Usage
+
+**Use the context manager** (safest):
+```python
+with TileFusion("tiles.ome.tiff") as tf:
+    # All operations here are thread-safe
+    tf.run()
+# Handles automatically closed when exiting the context
+```
+
+**Manual lifecycle management**:
+```python
+tf = TileFusion("tiles.ome.tiff")
+try:
+    tf.run()  # Handles thread pool internally
+finally:
+    tf.close()
+```
+
+### Known Limitations
+
+- **Do not call `close()` while threads are reading**: Closing handles mid-operation causes errors. Always ensure all read operations complete before calling `close()` or exiting the context manager.
+- **Thread-local handles consume file descriptors**: Each thread creates its own handle. With many threads, you may hit OS file descriptor limits.
+
 ## Acknowledgments
 
 This project is based on the [tilefusion module](https://github.com/QI2lab/opm-processing-v2/blob/tilefusion2D/src/opm_processing/imageprocessing/tilefusion.py) from [opm-processing-v2](https://github.com/QI2lab/opm-processing-v2) by [Doug Shepherd](https://github.com/dpshepherd) and the QI2lab team at Arizona State University.

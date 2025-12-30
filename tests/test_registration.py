@@ -142,3 +142,55 @@ class TestRegisterAndScore:
         assert isinstance(shift[0], float)
         assert isinstance(shift[1], float)
         assert isinstance(ssim, float)
+
+
+class TestOverlapBoundsSize:
+    """Tests verifying overlap region size from compute_pair_bounds."""
+
+    def test_horizontal_overlap_much_smaller_than_full_tile(self):
+        """Verify horizontal overlap region is much smaller than full tile.
+
+        For a 2048x2048 tile with 15% overlap (~307px), the overlap region is
+        roughly 2048 * 307 = 628,736 pixels, not 2048 * 2048 = 4,194,304 pixels.
+        """
+        tile_shape = (2048, 2048)
+        overlap_pixels = 307
+        dx = tile_shape[1] - overlap_pixels  # 1741
+
+        adjacent_pairs = [
+            (0, 1, 0, dx, tile_shape[0], overlap_pixels),  # horizontal pair
+        ]
+        pair_bounds = compute_pair_bounds(adjacent_pairs, tile_shape)
+
+        _, _, bounds_i_y, bounds_i_x, _, _ = pair_bounds[0]
+        actual_overlap_h = bounds_i_y[1] - bounds_i_y[0]
+        actual_overlap_w = bounds_i_x[1] - bounds_i_x[0]
+        actual_overlap_pixels = actual_overlap_h * actual_overlap_w
+
+        full_tile_pixels = tile_shape[0] * tile_shape[1]
+
+        # Overlap region should be much smaller than full tile
+        ratio = full_tile_pixels / actual_overlap_pixels
+        assert ratio > 5, f"Expected overlap to be <20% of full tile, got ratio {ratio:.1f}"
+
+        # Verify the bounds are correct
+        assert actual_overlap_w == overlap_pixels
+        assert actual_overlap_h == tile_shape[0]
+
+    def test_vertical_overlap_bounds(self):
+        """Test bounds for vertical overlap."""
+        tile_shape = (2048, 2048)
+        overlap_pixels = 307
+        dy = tile_shape[0] - overlap_pixels
+
+        adjacent_pairs = [
+            (0, 1, dy, 0, overlap_pixels, tile_shape[1]),  # vertical pair
+        ]
+        pair_bounds = compute_pair_bounds(adjacent_pairs, tile_shape)
+
+        _, _, bounds_i_y, bounds_i_x, _, _ = pair_bounds[0]
+        actual_overlap_h = bounds_i_y[1] - bounds_i_y[0]
+        actual_overlap_w = bounds_i_x[1] - bounds_i_x[0]
+
+        assert actual_overlap_h == overlap_pixels
+        assert actual_overlap_w == tile_shape[1]
