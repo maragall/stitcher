@@ -6,6 +6,7 @@ Main orchestration class that composes registration, fusion, optimization, and I
 
 import gc
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import tensorstore as ts
+import tifffile
 from tqdm import trange, tqdm
 
 from .utils import (
@@ -144,6 +146,10 @@ class TileFusion:
                     self._metadata = load_individual_tiffs_metadata(self.tiff_path)
         else:
             self._metadata = load_ome_tiff_metadata(self.tiff_path)
+            # Close the metadata handle immediately - we use thread-local handles
+            # for thread-safe concurrent reads instead of sharing this handle.
+            if "tiff_handle" in self._metadata:
+                self._metadata.pop("tiff_handle").close()
 
         # Extract common properties
         self.n_tiles = self._metadata["n_tiles"]
@@ -216,6 +222,138 @@ class TileFusion:
         self.pad = (0, 0)
         self.fused_ts = None
         self.center = None
+
+        # Thread-local storage for TiffFile handles (thread-safe concurrent access)
+        self._thread_local = threading.local()
+        self._handles_lock = threading.Lock()
+        self._all_handles: List[tifffile.TiffFile] = []
+
+    def close(self) -> None:
+        """
+        Close any open file handles to release resources.
+
+        This should be called when finished using a TileFusion instance,
+        or use it as a context manager (``with TileFusion(...) as tf:``)
+        for automatic cleanup. Important for OME-TIFF inputs where file
+        handles are kept open for performance.
+
+        Warning
+        -------
+        Only call this method when all read operations are complete. Calling
+        ``close()`` while other threads are still reading tiles will close
+        their handles mid-operation, causing errors.
+        """
+        # THREAD SAFETY NOTE:
+        # This method is NOT safe to call while other threads are actively reading.
+        # The design assumes close() is called only after all work is complete.
+        #
+        # Race condition scenario:
+        #   1. Thread A calls _get_thread_local_handle(), gets handle
+        #   2. Main thread calls close(), closes all handles
+        #   3. Thread A calls handle.series[idx].asarray() -> ERROR (closed file)
+        #
+        # We chose documentation over a complex fix (reference counting, read-write
+        # locks) because:
+        #   - The context manager pattern naturally prevents this issue
+        #   - Adding synchronization would hurt performance for the common case
+        #   - Users explicitly calling close() should know their threads are done
+        #
+        # Safe usage patterns:
+        #   - Use context manager: with TileFusion(...) as tf: ...
+        #   - Call close() only after ThreadPoolExecutor.shutdown(wait=True)
+        #   - Use single-threaded access when manually managing lifecycle
+
+        # Close all thread-local handles
+        with self._handles_lock:
+            for handle in self._all_handles:
+                try:
+                    handle.close()
+                except (OSError, AttributeError):
+                    pass  # Best-effort cleanup: handle may be invalid or already closed
+            self._all_handles.clear()
+
+        # Reset thread-local storage so future calls to _get_thread_local_handle()
+        # will create new handles. Note: This only affects threads that access
+        # self._thread_local AFTER this point. Threads that cached a handle reference
+        # before close() was called will still have stale (closed) handles, but
+        # _get_thread_local_handle() now checks for closed handles and creates new ones.
+        self._thread_local = threading.local()
+
+    def __enter__(self) -> "TileFusion":
+        """Enter the runtime context."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit the runtime context and close file handles."""
+        try:
+            self.close()
+        except Exception:
+            # If there was no exception in the with-block, propagate the close() failure.
+            # If there was an original exception, suppress close() errors so we don't mask it.
+            if exc_type is None:
+                raise
+
+    def __del__(self):
+        """
+        Destructor to ensure file handles are closed.
+
+        Note: This is a fallback safety net only. Python does not guarantee
+        when (or if) __del__ is called. Always prefer using the context
+        manager protocol (``with TileFusion(...) as tf:``) or explicitly
+        calling ``close()`` for reliable resource cleanup.
+        """
+        try:
+            self.close()
+        except (OSError, AttributeError, TypeError):
+            pass  # Object may be partially initialized, or close() may fail during shutdown
+
+    def _get_thread_local_handle(self) -> Optional[tifffile.TiffFile]:
+        """
+        Get or create a thread-local TiffFile handle for the current thread.
+
+        Each thread gets its own file handle to ensure thread-safe concurrent
+        reads. This avoids race conditions that can occur when multiple threads
+        share a single file descriptor (seek + read is not atomic on Windows).
+
+        Returns
+        -------
+        tifffile.TiffFile or None
+            Thread-local handle for OME-TIFF files, None for other formats.
+        """
+        # Only applies to OME-TIFF format (not zarr, individual tiffs, etc.)
+        if (
+            self._is_zarr_format
+            or self._is_individual_tiffs_format
+            or self._is_ome_tiff_tiles_format
+        ):
+            return None
+
+        # Check if this thread already has a valid (open) handle.
+        # NOTE: There is a race condition between this check and using the handle -
+        # another thread could call close() after validation but before the handle
+        # is used. This is documented behavior; callers must ensure close() is only
+        # called after all read operations complete.
+        if hasattr(self._thread_local, "tiff_handle"):
+            handle = self._thread_local.tiff_handle
+            # Verify handle exists and is not closed.
+            # We check filehandle.closed which is a reliable indicator.
+            if (
+                handle is not None
+                and handle.filehandle is not None
+                and not handle.filehandle.closed
+            ):
+                return handle
+            # Handle was closed or invalid - will create a new one below
+
+        # Create a new handle for this thread
+        handle = tifffile.TiffFile(self.tiff_path)
+        self._thread_local.tiff_handle = handle
+
+        # Track for cleanup
+        with self._handles_lock:
+            self._all_handles.append(handle)
+
+        return handle
 
     # -------------------------------------------------------------------------
     # Properties
@@ -319,7 +457,9 @@ class TileFusion:
                 time_idx=time_idx,
             )
         else:
-            return read_ome_tiff_tile(self.tiff_path, tile_idx)
+            # Use thread-local handle for thread-safe concurrent reads
+            handle = self._get_thread_local_handle()
+            return read_ome_tiff_tile(self.tiff_path, tile_idx, handle)
 
     def _read_tile_region(
         self,
@@ -364,7 +504,9 @@ class TileFusion:
                 time_idx=time_idx,
             )
         else:
-            return read_ome_tiff_region(self.tiff_path, tile_idx, y_slice, x_slice)
+            # Use thread-local handle for thread-safe concurrent reads
+            handle = self._get_thread_local_handle()
+            return read_ome_tiff_region(self.tiff_path, tile_idx, y_slice, x_slice, handle)
 
     # -------------------------------------------------------------------------
     # Registration
