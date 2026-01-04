@@ -1059,7 +1059,7 @@ class StitcherGUI(QMainWindow):
 
         # Flatfield status and view button
         status_layout = QHBoxLayout()
-        self.flatfield_status = QLabel("")
+        self.flatfield_status = QLabel("No flatfield")
         self.flatfield_status.setStyleSheet("color: #86868b; font-size: 11px;")
         status_layout.addWidget(self.flatfield_status)
 
@@ -1070,6 +1070,14 @@ class StitcherGUI(QMainWindow):
         self.view_flatfield_button.setToolTip("View flatfield and darkfield in napari")
         self.view_flatfield_button.setFixedWidth(60)
         status_layout.addWidget(self.view_flatfield_button)
+
+        self.clear_flatfield_button = QPushButton("Clear")
+        self.clear_flatfield_button.setCursor(Qt.PointingHandCursor)
+        self.clear_flatfield_button.clicked.connect(self.clear_flatfield)
+        self.clear_flatfield_button.setEnabled(False)
+        self.clear_flatfield_button.setToolTip("Clear loaded flatfield")
+        self.clear_flatfield_button.setFixedWidth(60)
+        status_layout.addWidget(self.clear_flatfield_button)
         status_layout.addStretch()
 
         flatfield_options_layout.addLayout(status_layout)
@@ -1207,10 +1215,18 @@ class StitcherGUI(QMainWindow):
         # Clear previous flatfield when new file is selected
         self.flatfield = None
         self.darkfield = None
-        self.flatfield_status.setText("")
+        self.flatfield_status.setText("No flatfield")
+        self.flatfield_status.setStyleSheet("color: #86868b; font-size: 11px;")
         self.flatfield_drop_area.clear()
         self.view_flatfield_button.setEnabled(False)
+        self.clear_flatfield_button.setEnabled(False)
         self.save_flatfield_button.setEnabled(False)
+
+        # Auto-load existing flatfield if present
+        flatfield_path = path.parent / f"{path.stem}_flatfield.npy"
+        if flatfield_path.exists():
+            self.log(f"Found existing flatfield: {flatfield_path.name}")
+            self.on_flatfield_dropped(str(flatfield_path))
 
     def on_registration_toggled(self, checked):
         self.downsample_widget.setVisible(checked)
@@ -1224,8 +1240,10 @@ class StitcherGUI(QMainWindow):
             # Clear flatfield when disabled
             self.flatfield = None
             self.darkfield = None
-            self.flatfield_status.setText("")
+            self.flatfield_status.setText("No flatfield")
+            self.flatfield_status.setStyleSheet("color: #86868b; font-size: 11px;")
             self.view_flatfield_button.setEnabled(False)
+            self.clear_flatfield_button.setEnabled(False)
 
     def on_flatfield_mode_changed(self, button):
         is_calculate = self.calc_radio.isChecked()
@@ -1256,6 +1274,7 @@ class StitcherGUI(QMainWindow):
         self.calc_flatfield_button.setEnabled(True)
         self.save_flatfield_button.setEnabled(True)
         self.view_flatfield_button.setEnabled(True)
+        self.clear_flatfield_button.setEnabled(True)
 
         n_channels = flatfield.shape[0]
         status = f"Flatfield ready ({n_channels} channels)"
@@ -1327,6 +1346,7 @@ class StitcherGUI(QMainWindow):
                 "color: #34c759; font-size: 11px; font-weight: 600;"
             )
             self.view_flatfield_button.setEnabled(True)
+            self.clear_flatfield_button.setEnabled(True)
             self.log(f"Loaded flatfield from {file_path}: {self.flatfield.shape}")
         except Exception as e:
             self.flatfield_status.setText(f"Load failed: {e}")
@@ -1374,6 +1394,18 @@ class StitcherGUI(QMainWindow):
             self.log("Opened flatfield viewer in napari")
         except Exception as e:
             self.log(f"Error opening napari viewer: {e}")
+
+    def clear_flatfield(self):
+        """Clear loaded/calculated flatfield."""
+        self.flatfield = None
+        self.darkfield = None
+        self.flatfield_status.setText("No flatfield")
+        self.flatfield_status.setStyleSheet("color: #86868b; font-size: 11px;")
+        self.view_flatfield_button.setEnabled(False)
+        self.clear_flatfield_button.setEnabled(False)
+        self.save_flatfield_button.setEnabled(False)
+        self.flatfield_drop_area.clear()
+        self.log("Flatfield cleared")
 
     def log(self, message):
         self.log_text.append(message)
