@@ -7,12 +7,77 @@ Least-squares optimization of tile positions from pairwise measurements.
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
+from scipy import sparse
+from scipy.sparse.linalg import lsqr
+
+# Threshold for switching between dense and sparse solvers.
+# Below this, dense lstsq is faster; above, sparse LSQR wins.
+_SPARSE_THRESHOLD = 100
+
+
+def _solve_dense(links: List[Dict[str, Any]], n_tiles: int, fixed_indices: List[int]) -> np.ndarray:
+    """Dense solver using numpy lstsq (better for small problems)."""
+    shifts = np.zeros((n_tiles, 2), dtype=np.float64)
+    m = len(links) + len(fixed_indices)
+    for axis in range(2):
+        A = np.zeros((m, n_tiles), dtype=np.float64)
+        b = np.zeros(m, dtype=np.float64)
+        for row, link in enumerate(links):
+            w = link["w"]
+            A[row, link["j"]] = w
+            A[row, link["i"]] = -w
+            b[row] = w * link["t"][axis]
+        for k, idx in enumerate(fixed_indices):
+            A[len(links) + k, idx] = 1.0
+        shifts[:, axis] = np.linalg.lstsq(A, b, rcond=None)[0]
+    return shifts
+
+
+def _solve_sparse(links: List[Dict[str, Any]], n_tiles: int, fixed_indices: List[int]) -> np.ndarray:
+    """Sparse solver using scipy LSQR (better for large problems)."""
+    n_links = len(links)
+    n_fixed = len(fixed_indices)
+    m = n_links + n_fixed
+
+    row_idx = np.empty(2 * n_links + n_fixed, dtype=np.int32)
+    col_idx = np.empty(2 * n_links + n_fixed, dtype=np.int32)
+    data = np.empty(2 * n_links + n_fixed, dtype=np.float64)
+
+    for k, link in enumerate(links):
+        w = link["w"]
+        row_idx[2 * k] = k
+        col_idx[2 * k] = link["j"]
+        data[2 * k] = w
+        row_idx[2 * k + 1] = k
+        col_idx[2 * k + 1] = link["i"]
+        data[2 * k + 1] = -w
+
+    base = 2 * n_links
+    for k, idx in enumerate(fixed_indices):
+        row_idx[base + k] = n_links + k
+        col_idx[base + k] = idx
+        data[base + k] = 1.0
+
+    A = sparse.csr_matrix((data, (row_idx, col_idx)), shape=(m, n_tiles))
+
+    b = np.zeros((m, 2), dtype=np.float64)
+    for k, link in enumerate(links):
+        b[k, 0] = link["w"] * link["t"][0]
+        b[k, 1] = link["w"] * link["t"][1]
+
+    shifts = np.zeros((n_tiles, 2), dtype=np.float64)
+    shifts[:, 0] = lsqr(A, b[:, 0], atol=1e-10, btol=1e-10)[0]
+    shifts[:, 1] = lsqr(A, b[:, 1], atol=1e-10, btol=1e-10)[0]
+    return shifts
 
 
 def solve_global(links: List[Dict[str, Any]], n_tiles: int, fixed_indices: List[int]) -> np.ndarray:
     """
     Solve a linear least-squares for all 2 axes at once,
     given weighted pairwise links and fixed tile indices.
+
+    Uses dense solver for small problems (<100 tiles) and sparse LSQR
+    for larger problems where memory and compute savings are significant.
 
     Parameters
     ----------
@@ -28,26 +93,12 @@ def solve_global(links: List[Dict[str, Any]], n_tiles: int, fixed_indices: List[
     shifts : ndarray of shape (n_tiles, 2)
         Optimized shifts for each tile.
     """
-    shifts = np.zeros((n_tiles, 2), dtype=np.float64)
-    for axis in range(2):
-        m = len(links) + len(fixed_indices)
-        A = np.zeros((m, n_tiles), dtype=np.float64)
-        b = np.zeros(m, dtype=np.float64)
-        row = 0
-        for link in links:
-            i, j = link["i"], link["j"]
-            t, w = link["t"][axis], link["w"]
-            A[row, j] = w
-            A[row, i] = -w
-            b[row] = w * t
-            row += 1
-        for idx in fixed_indices:
-            A[row, idx] = 1.0
-            b[row] = 0.0
-            row += 1
-        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
-        shifts[:, axis] = sol
-    return shifts
+    if not links:
+        return np.zeros((n_tiles, 2), dtype=np.float64)
+
+    if n_tiles < _SPARSE_THRESHOLD:
+        return _solve_dense(links, n_tiles, fixed_indices)
+    return _solve_sparse(links, n_tiles, fixed_indices)
 
 
 def two_round_optimization(
@@ -59,11 +110,7 @@ def two_round_optimization(
     iterative: bool,
 ) -> np.ndarray:
     """
-    Perform two-round (or iterative two-round) robust optimization:
-    1. Solve on all links.
-    2. Remove any link whose residual > max(abs_thresh, rel_thresh * median(residuals)).
-    3. Re-solve on the remaining links.
-    If iterative=True, repeat step 2 + 3 until no more links are removed.
+    Perform two-round (or iterative two-round) robust optimization.
 
     Parameters
     ----------
@@ -121,19 +168,7 @@ def two_round_optimization(
 def links_from_pairwise_metrics(
     pairwise_metrics: Dict[Tuple[int, int], Tuple[int, int, float]],
 ) -> List[Dict[str, Any]]:
-    """
-    Convert pairwise_metrics dict to list of link dicts.
-
-    Parameters
-    ----------
-    pairwise_metrics : dict
-        Keys are (i, j) tuples, values are (dy, dx, score) tuples.
-
-    Returns
-    -------
-    links : list of dict
-        Each dict has 'i', 'j', 't', 'w' keys.
-    """
+    """Convert pairwise_metrics dict to list of link dicts."""
     links = []
     for (i, j), v in pairwise_metrics.items():
         links.append(
