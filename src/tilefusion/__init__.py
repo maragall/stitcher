@@ -12,6 +12,24 @@ Original author: Doug Shepherd (https://github.com/dpshepherd), QI2lab, Arizona 
 
 from .core import TileFusion
 from .utils import USING_GPU
+from .flatfield import (
+    calculate_flatfield,
+    apply_flatfield,
+    apply_flatfield_region,
+    save_flatfield,
+    load_flatfield,
+    HAS_BASICPY,
+)
 
 __version__ = "0.1.0"
-__all__ = ["TileFusion", "USING_GPU", "__version__"]
+__all__ = [
+    "TileFusion",
+    "USING_GPU",
+    "__version__",
+    "calculate_flatfield",
+    "apply_flatfield",
+    "apply_flatfield_region",
+    "save_flatfield",
+    "load_flatfield",
+    "HAS_BASICPY",
+]

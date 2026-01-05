@@ -31,6 +31,8 @@ from PyQt5.QtWidgets import (
     QGraphicsDropShadowEffect,
     QComboBox,
     QSlider,
+    QRadioButton,
+    QButtonGroup,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPropertyAnimation, QEasingCurve
 from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QColor, QPalette, QLinearGradient
@@ -222,6 +224,48 @@ QScrollBar::handle:vertical:hover {
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0px;
 }
+
+QRadioButton {
+    spacing: 8px;
+    font-size: 13px;
+    color: #1d1d1f;
+}
+
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    border: 2px solid #c7c7cc;
+    background-color: #ffffff;
+}
+
+QRadioButton::indicator:checked {
+    background-color: #0071e3;
+    border-color: #0071e3;
+}
+
+QRadioButton::indicator:hover {
+    border-color: #0071e3;
+}
+
+QPushButton#calcFlatfieldButton {
+    background-color: #5856d6;
+    color: white;
+    font-size: 13px;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 16px;
+}
+
+QPushButton#calcFlatfieldButton:hover {
+    background-color: #6866e0;
+}
+
+QPushButton#calcFlatfieldButton:disabled {
+    background-color: #c7c7cc;
+    color: #8e8e93;
+}
 """
 
 
@@ -232,12 +276,22 @@ class PreviewWorker(QThread):
     finished = pyqtSignal(object, object, object)  # color_before, color_after, fused
     error = pyqtSignal(str)
 
-    def __init__(self, tiff_path, preview_cols, preview_rows, downsample_factor):
+    def __init__(
+        self,
+        tiff_path,
+        preview_cols,
+        preview_rows,
+        downsample_factor,
+        flatfield=None,
+        darkfield=None,
+    ):
         super().__init__()
         self.tiff_path = tiff_path
         self.preview_cols = preview_cols
         self.preview_rows = preview_rows
         self.downsample_factor = downsample_factor
+        self.flatfield = flatfield
+        self.darkfield = darkfield
 
     def run(self):
         try:
@@ -248,7 +302,10 @@ class PreviewWorker(QThread):
 
             # Create TileFusion instance - handles both OME-TIFF and SQUID formats
             tf_full = TileFusion(
-                self.tiff_path, downsample_factors=(self.downsample_factor, self.downsample_factor)
+                self.tiff_path,
+                downsample_factors=(self.downsample_factor, self.downsample_factor),
+                flatfield=self.flatfield,
+                darkfield=self.darkfield,
             )
 
             positions = np.array(tf_full._tile_positions)
@@ -416,7 +473,14 @@ class FusionWorker(QThread):
     error = pyqtSignal(str)
 
     def __init__(
-        self, tiff_path, do_registration, blend_pixels, downsample_factor, fusion_mode="blended"
+        self,
+        tiff_path,
+        do_registration,
+        blend_pixels,
+        downsample_factor,
+        fusion_mode="blended",
+        flatfield=None,
+        darkfield=None,
     ):
         super().__init__()
         self.tiff_path = tiff_path
@@ -424,6 +488,8 @@ class FusionWorker(QThread):
         self.blend_pixels = blend_pixels
         self.downsample_factor = downsample_factor
         self.fusion_mode = fusion_mode
+        self.flatfield = flatfield
+        self.darkfield = darkfield
         self.output_path = None
 
     def run(self):
@@ -464,6 +530,8 @@ class FusionWorker(QThread):
                 output_path=output_path,
                 blend_pixels=self.blend_pixels,
                 downsample_factors=(self.downsample_factor, self.downsample_factor),
+                flatfield=self.flatfield,
+                darkfield=self.darkfield,
             )
             load_time = time.time() - step_start
             self.progress.emit(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each) [{load_time:.1f}s]")
@@ -676,18 +744,195 @@ class DropArea(QFrame):
         )
 
 
+class FlatfieldDropArea(QFrame):
+    """Small drag and drop area for flatfield .npy files."""
+
+    fileDropped = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setAcceptDrops(True)
+        self.setFrameStyle(QFrame.StyledPanel | QFrame.Sunken)
+        self.setMinimumHeight(60)
+        self.setMaximumHeight(80)
+        self.setStyleSheet(
+            """
+            QFrame {
+                border: 2px dashed #c7c7cc;
+                border-radius: 8px;
+                background-color: #ffffff;
+            }
+            QFrame:hover {
+                border-color: #5856d6;
+                background-color: #f5f5ff;
+            }
+        """
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setSpacing(8)
+
+        self.icon_label = QLabel("📄")
+        self.icon_label.setStyleSheet("font-size: 20px; border: none; background: transparent;")
+        layout.addWidget(self.icon_label)
+
+        self.label = QLabel("Drop flatfield .npy file here or click to browse")
+        self.label.setStyleSheet(
+            "color: #86868b; font-size: 12px; border: none; background: transparent;"
+        )
+        layout.addWidget(self.label)
+        layout.addStretch()
+
+        self.file_path = None
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            self.setStyleSheet(
+                """
+                QFrame {
+                    border: 2px dashed #5856d6;
+                    border-radius: 8px;
+                    background-color: #ebebff;
+                }
+            """
+            )
+
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet(
+            """
+            QFrame {
+                border: 2px dashed #c7c7cc;
+                border-radius: 8px;
+                background-color: #ffffff;
+            }
+        """
+        )
+
+    def dropEvent(self, event: QDropEvent):
+        self.setStyleSheet(
+            """
+            QFrame {
+                border: 2px dashed #c7c7cc;
+                border-radius: 8px;
+                background-color: #ffffff;
+            }
+        """
+        )
+
+        urls = event.mimeData().urls()
+        if urls:
+            file_path = urls[0].toLocalFile()
+            if file_path.endswith(".npy"):
+                self.setFile(file_path)
+                self.fileDropped.emit(file_path)
+
+    def mousePressEvent(self, event):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select flatfield file", "", "NumPy files (*.npy);;All files (*.*)"
+        )
+        if file_path:
+            self.setFile(file_path)
+            self.fileDropped.emit(file_path)
+
+    def setFile(self, file_path):
+        self.file_path = file_path
+        path = Path(file_path)
+        self.icon_label.setText("✅")
+        self.label.setText(path.name)
+        self.label.setStyleSheet(
+            "color: #5856d6; font-size: 12px; font-weight: 600; border: none; background: transparent;"
+        )
+
+    def clear(self):
+        self.file_path = None
+        self.icon_label.setText("📄")
+        self.label.setText("Drop flatfield .npy file here or click to browse")
+        self.label.setStyleSheet(
+            "color: #86868b; font-size: 12px; border: none; background: transparent;"
+        )
+
+
+class FlatfieldWorker(QThread):
+    """Worker thread for calculating flatfield using BaSiCPy."""
+
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(object, object)  # flatfield, darkfield (or None)
+    error = pyqtSignal(str)
+
+    def __init__(self, file_path, n_samples=50, use_darkfield=False):
+        super().__init__()
+        self.file_path = file_path
+        self.n_samples = n_samples
+        self.use_darkfield = use_darkfield
+
+    def run(self):
+        try:
+            import numpy as np
+            from tilefusion import TileFusion, calculate_flatfield, HAS_BASICPY
+
+            if not HAS_BASICPY:
+                self.error.emit("BaSiCPy is not installed. Install with: pip install basicpy")
+                return
+
+            self.progress.emit("Loading metadata...")
+
+            # Create TileFusion instance to read tiles.
+            # NOTE: No flatfield/darkfield passed intentionally - flatfield estimation
+            # must be performed on raw, uncorrected tiles.
+            tf = TileFusion(self.file_path)
+
+            # Determine how many tiles to sample
+            n_tiles = tf.n_tiles
+            n_samples = min(self.n_samples, n_tiles)
+
+            self.progress.emit(f"Sampling {n_samples} tiles from {n_tiles} total...")
+
+            # Random sample of tile indices
+            rng = np.random.default_rng(42)
+            sample_indices = rng.choice(n_tiles, size=n_samples, replace=False)
+            sample_indices = sorted(sample_indices)
+
+            # Read sampled tiles
+            # NOTE: Using private method tf._read_tile intentionally.
+            # FlatfieldWorker needs direct access to raw tile data for sampling.
+            tiles = []
+            for i, tile_idx in enumerate(sample_indices):
+                self.progress.emit(f"Reading tile {i+1}/{n_samples}...")
+                tile = tf._read_tile(tile_idx)
+                tiles.append(tile)
+
+            self.progress.emit("Calculating flatfield with BaSiCPy...")
+            flatfield, darkfield = calculate_flatfield(
+                tiles, use_darkfield=self.use_darkfield, constant_darkfield=True
+            )
+
+            self.progress.emit("Flatfield calculation complete!")
+            self.finished.emit(flatfield, darkfield)
+
+        except Exception as e:
+            import traceback
+
+            self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
+
+
 class StitcherGUI(QMainWindow):
     """Main GUI window for the stitcher."""
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Stitcher")
-        self.setMinimumSize(500, 600)
+        self.setMinimumSize(500, 850)
 
         self.worker = None
         self.output_path = None
         self.regions = []  # List of region names for multi-region outputs
         self.is_multi_region = False
+
+        # Flatfield correction state
+        self.flatfield = None  # Shape (C, Y, X) or None
+        self.darkfield = None  # Shape (C, Y, X) or None
+        self.flatfield_worker = None
 
         self.setup_ui()
 
@@ -739,6 +984,116 @@ class StitcherGUI(QMainWindow):
         preview_layout.addWidget(self.preview_button)
 
         layout.addWidget(preview_group)
+
+        # Flatfield correction section
+        flatfield_group = QGroupBox("Flatfield Correction")
+        flatfield_layout = QVBoxLayout(flatfield_group)
+        flatfield_layout.setSpacing(10)
+
+        # Enable flatfield checkbox
+        self.flatfield_checkbox = QCheckBox("Enable flatfield correction")
+        self.flatfield_checkbox.setChecked(True)  # Default enabled
+        self.flatfield_checkbox.setMinimumHeight(32)
+        self.flatfield_checkbox.toggled.connect(self.on_flatfield_toggled)
+        flatfield_layout.addWidget(self.flatfield_checkbox)
+
+        # Container for flatfield options (shown when enabled)
+        self.flatfield_options_widget = QWidget()
+        flatfield_options_layout = QVBoxLayout(self.flatfield_options_widget)
+        flatfield_options_layout.setContentsMargins(24, 0, 0, 0)
+        flatfield_options_layout.setSpacing(8)
+
+        # Radio buttons for Calculate vs Load
+        self.flatfield_mode_group = QButtonGroup(self)
+        radio_layout = QHBoxLayout()
+
+        self.calc_radio = QRadioButton("Calculate from tiles")
+        self.calc_radio.setChecked(True)
+        self.flatfield_mode_group.addButton(self.calc_radio, 0)
+        radio_layout.addWidget(self.calc_radio)
+
+        self.load_radio = QRadioButton("Load from file")
+        self.flatfield_mode_group.addButton(self.load_radio, 1)
+        radio_layout.addWidget(self.load_radio)
+
+        radio_layout.addStretch()
+        flatfield_options_layout.addLayout(radio_layout)
+
+        # Calculate options container
+        self.calc_options_widget = QWidget()
+        calc_options_layout = QVBoxLayout(self.calc_options_widget)
+        calc_options_layout.setContentsMargins(0, 0, 0, 0)
+        calc_options_layout.setSpacing(8)
+
+        # Darkfield checkbox
+        self.darkfield_checkbox = QCheckBox("Include darkfield correction")
+        self.darkfield_checkbox.setChecked(False)
+        calc_options_layout.addWidget(self.darkfield_checkbox)
+
+        # Calculate and save buttons
+        calc_btn_layout = QHBoxLayout()
+        self.calc_flatfield_button = QPushButton("Calculate Flatfield")
+        self.calc_flatfield_button.setObjectName("calcFlatfieldButton")
+        self.calc_flatfield_button.setCursor(Qt.PointingHandCursor)
+        self.calc_flatfield_button.clicked.connect(self.calculate_flatfield)
+        self.calc_flatfield_button.setEnabled(False)
+        calc_btn_layout.addWidget(self.calc_flatfield_button)
+
+        self.save_flatfield_button = QPushButton("Save")
+        self.save_flatfield_button.setCursor(Qt.PointingHandCursor)
+        self.save_flatfield_button.clicked.connect(self.save_flatfield)
+        self.save_flatfield_button.setEnabled(False)
+        self.save_flatfield_button.setToolTip("Save calculated flatfield to .npy file")
+        calc_btn_layout.addWidget(self.save_flatfield_button)
+
+        calc_btn_layout.addStretch()
+        calc_options_layout.addLayout(calc_btn_layout)
+
+        flatfield_options_layout.addWidget(self.calc_options_widget)
+
+        # Load options container
+        self.load_options_widget = QWidget()
+        self.load_options_widget.setVisible(False)
+        load_options_layout = QVBoxLayout(self.load_options_widget)
+        load_options_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.flatfield_drop_area = FlatfieldDropArea()
+        self.flatfield_drop_area.fileDropped.connect(self.on_flatfield_dropped)
+        load_options_layout.addWidget(self.flatfield_drop_area)
+
+        flatfield_options_layout.addWidget(self.load_options_widget)
+
+        # Flatfield status and view button
+        status_layout = QHBoxLayout()
+        self.flatfield_status = QLabel("No flatfield")
+        self.flatfield_status.setStyleSheet("color: #86868b; font-size: 11px;")
+        status_layout.addWidget(self.flatfield_status)
+
+        self.view_flatfield_button = QPushButton("View")
+        self.view_flatfield_button.setCursor(Qt.PointingHandCursor)
+        self.view_flatfield_button.clicked.connect(self.view_flatfield)
+        self.view_flatfield_button.setEnabled(False)
+        self.view_flatfield_button.setToolTip("View flatfield and darkfield")
+        self.view_flatfield_button.setFixedWidth(60)
+        status_layout.addWidget(self.view_flatfield_button)
+
+        self.clear_flatfield_button = QPushButton("Clear")
+        self.clear_flatfield_button.setCursor(Qt.PointingHandCursor)
+        self.clear_flatfield_button.clicked.connect(self.clear_flatfield)
+        self.clear_flatfield_button.setEnabled(False)
+        self.clear_flatfield_button.setToolTip("Clear loaded flatfield")
+        self.clear_flatfield_button.setFixedWidth(60)
+        status_layout.addWidget(self.clear_flatfield_button)
+        status_layout.addStretch()
+
+        flatfield_options_layout.addLayout(status_layout)
+
+        flatfield_layout.addWidget(self.flatfield_options_widget)
+
+        # Connect radio button signals
+        self.flatfield_mode_group.buttonClicked.connect(self.on_flatfield_mode_changed)
+
+        layout.addWidget(flatfield_group)
 
         # Registration settings
         reg_group = QGroupBox("Settings")
@@ -862,12 +1217,241 @@ class StitcherGUI(QMainWindow):
             self.log(f"Selected OME-TIFF: {file_path}")
         self.run_button.setEnabled(True)
         self.preview_button.setEnabled(True)
+        self.calc_flatfield_button.setEnabled(True)
+        # Clear previous flatfield when new file is selected
+        self.flatfield = None
+        self.darkfield = None
+        self.flatfield_status.setText("No flatfield")
+        self.flatfield_status.setStyleSheet("color: #86868b; font-size: 11px;")
+        self.flatfield_drop_area.clear()
+        self.view_flatfield_button.setEnabled(False)
+        self.clear_flatfield_button.setEnabled(False)
+        self.save_flatfield_button.setEnabled(False)
+
+        # Auto-load existing flatfield if present, otherwise disable correction
+        # For directories (SQUID folders), also check inside the directory
+        if path.is_dir():
+            flatfield_path = path / f"{path.name}_flatfield.npy"
+            if not flatfield_path.exists():
+                # Fallback: check next to the directory
+                flatfield_path = path.parent / f"{path.name}_flatfield.npy"
+        else:
+            flatfield_path = path.parent / f"{path.stem}_flatfield.npy"
+
+        if flatfield_path.exists():
+            self.log(f"Found existing flatfield: {flatfield_path.name}")
+            self.on_flatfield_dropped(str(flatfield_path))
+            self.flatfield_drop_area.setFile(str(flatfield_path))
+        else:
+            self.flatfield_checkbox.setChecked(False)
 
     def on_registration_toggled(self, checked):
         self.downsample_widget.setVisible(checked)
 
     def on_blend_toggled(self, checked):
         self.blend_value_widget.setVisible(checked)
+
+    def on_flatfield_toggled(self, checked):
+        # Only show/hide flatfield options; preserve any loaded/calculated data
+        self.flatfield_options_widget.setVisible(checked)
+
+    def on_flatfield_mode_changed(self, button):
+        is_calculate = self.calc_radio.isChecked()
+        self.calc_options_widget.setVisible(is_calculate)
+        self.load_options_widget.setVisible(not is_calculate)
+
+    def calculate_flatfield(self):
+        if not self.drop_area.file_path:
+            return
+
+        self.calc_flatfield_button.setEnabled(False)
+        self.flatfield_status.setText("Calculating flatfield...")
+        self.flatfield_status.setStyleSheet("color: #ff9500; font-size: 11px;")
+
+        self.flatfield_worker = FlatfieldWorker(
+            self.drop_area.file_path,
+            n_samples=50,
+            use_darkfield=self.darkfield_checkbox.isChecked(),
+        )
+        self.flatfield_worker.progress.connect(self.log)
+        self.flatfield_worker.finished.connect(self.on_flatfield_calculated)
+        self.flatfield_worker.error.connect(self.on_flatfield_error)
+        self.flatfield_worker.start()
+
+    def on_flatfield_calculated(self, flatfield, darkfield):
+        self.flatfield = flatfield
+        self.darkfield = darkfield
+        self.calc_flatfield_button.setEnabled(True)
+        self.save_flatfield_button.setEnabled(True)
+        self.view_flatfield_button.setEnabled(True)
+        self.clear_flatfield_button.setEnabled(True)
+
+        n_channels = flatfield.shape[0]
+        status = f"Flatfield ready ({n_channels} channels)"
+        if darkfield is not None:
+            status += " + darkfield"
+        self.flatfield_status.setText(status)
+        self.flatfield_status.setStyleSheet("color: #34c759; font-size: 11px; font-weight: 600;")
+        self.log(f"Flatfield calculation complete: {flatfield.shape}")
+
+        # Auto-save flatfield next to input file
+        if self.drop_area.file_path:
+            try:
+                from tilefusion import save_flatfield as save_ff
+
+                input_path = Path(self.drop_area.file_path)
+                # Use path.name for directories, path.stem for files (consistent with auto-load)
+                if input_path.is_dir():
+                    auto_save_path = input_path / f"{input_path.name}_flatfield.npy"
+                else:
+                    auto_save_path = input_path.parent / f"{input_path.stem}_flatfield.npy"
+                save_ff(auto_save_path, self.flatfield, self.darkfield)
+                self.log(f"Auto-saved flatfield to {auto_save_path}")
+            except Exception as e:
+                self.log(f"Warning: Could not auto-save flatfield: {e}")
+
+    def save_flatfield(self):
+        if self.flatfield is None:
+            return
+
+        # Default path based on input (consistent with auto-save/auto-load)
+        default_path = "flatfield.npy"
+        if self.drop_area.file_path:
+            input_path = Path(self.drop_area.file_path)
+            if input_path.is_dir():
+                default_path = str(input_path / f"{input_path.name}_flatfield.npy")
+            else:
+                default_path = str(input_path.parent / f"{input_path.stem}_flatfield.npy")
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Flatfield",
+            default_path,
+            "NumPy files (*.npy);;All files (*.*)",
+        )
+        if file_path:
+            try:
+                from tilefusion import save_flatfield as save_ff
+
+                save_ff(Path(file_path), self.flatfield, self.darkfield)
+                self.log(f"Saved flatfield to {file_path}")
+            except Exception as e:
+                self.log(f"Error saving flatfield: {e}")
+
+    def on_flatfield_error(self, error_msg):
+        self.calc_flatfield_button.setEnabled(True)
+        self.flatfield_status.setText("Calculation failed")
+        self.flatfield_status.setStyleSheet("color: #ff3b30; font-size: 11px;")
+        self.log(error_msg)
+
+    def on_flatfield_dropped(self, file_path):
+        import numpy as np
+
+        try:
+            from tilefusion import load_flatfield
+
+            self.flatfield, self.darkfield = load_flatfield(Path(file_path))
+            n_channels = self.flatfield.shape[0]
+            status = f"Loaded ({n_channels} channels)"
+            if self.darkfield is not None:
+                status += " + darkfield"
+            self.flatfield_status.setText(status)
+            self.flatfield_status.setStyleSheet(
+                "color: #34c759; font-size: 11px; font-weight: 600;"
+            )
+            self.view_flatfield_button.setEnabled(True)
+            self.clear_flatfield_button.setEnabled(True)
+            self.save_flatfield_button.setEnabled(True)
+            # Enable flatfield correction when successfully loaded
+            self.flatfield_checkbox.setChecked(True)
+            self.log(f"Loaded flatfield from {file_path}: {self.flatfield.shape}")
+        except Exception as e:
+            # Clear any stale flatfield data on load failure
+            self.flatfield = None
+            self.darkfield = None
+            self.flatfield_status.setText(f"Load failed: {e}")
+            self.flatfield_status.setStyleSheet("color: #ff3b30; font-size: 11px;")
+            self.view_flatfield_button.setEnabled(False)
+            self.log(f"Error loading flatfield: {e}")
+
+    def view_flatfield(self):
+        if self.flatfield is None:
+            return
+
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg")  # Non-interactive backend
+            import matplotlib.pyplot as plt
+            import numpy as np
+            import tempfile
+            import subprocess
+
+            n_channels = self.flatfield.shape[0]
+            has_darkfield = self.darkfield is not None
+            n_rows = 2 if has_darkfield else 1
+
+            fig, axes = plt.subplots(n_rows, n_channels, figsize=(4 * n_channels, 4 * n_rows))
+
+            # Handle single channel case (axes not 2D)
+            if n_channels == 1 and n_rows == 1:
+                axes = [[axes]]
+            elif n_channels == 1:
+                axes = [[ax] for ax in axes]
+            elif n_rows == 1:
+                axes = [axes]
+
+            # First row: flatfield
+            for ch in range(n_channels):
+                ax = axes[0][ch]
+                im = ax.imshow(self.flatfield[ch], cmap="viridis", vmin=0)
+                ax.set_title(f"Flatfield Ch{ch}")
+                ax.axis("off")
+                plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+            # Second row: darkfield (if available)
+            if has_darkfield:
+                for ch in range(n_channels):
+                    ax = axes[1][ch]
+                    im = ax.imshow(self.darkfield[ch], cmap="magma", vmin=0)
+                    # Show constant value in title if darkfield is uniform
+                    df_val = self.darkfield[ch].ravel()[0]
+                    if np.allclose(self.darkfield[ch], df_val):
+                        ax.set_title(f"Darkfield Ch{ch} (={df_val:.1f})")
+                    else:
+                        ax.set_title(f"Darkfield Ch{ch}")
+                    ax.axis("off")
+                    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+            plt.tight_layout()
+
+            # Save to temp file and open with system viewer
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                fig.savefig(f.name, dpi=150, bbox_inches="tight")
+                plt.close(fig)
+                # Open with default image viewer
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", f.name])
+                elif sys.platform == "win32":
+                    subprocess.Popen(["cmd", "/c", "start", "", f.name])
+                else:
+                    subprocess.Popen(["xdg-open", f.name])
+
+            self.log("Opened flatfield viewer")
+        except Exception as e:
+            self.log(f"Error opening viewer: {e}")
+
+    def clear_flatfield(self):
+        """Clear loaded/calculated flatfield."""
+        self.flatfield = None
+        self.darkfield = None
+        self.flatfield_status.setText("No flatfield")
+        self.flatfield_status.setStyleSheet("color: #86868b; font-size: 11px;")
+        self.view_flatfield_button.setEnabled(False)
+        self.clear_flatfield_button.setEnabled(False)
+        self.save_flatfield_button.setEnabled(False)
+        self.flatfield_drop_area.clear()
+        self.log("Flatfield cleared")
 
     def log(self, message):
         self.log_text.append(message)
@@ -890,12 +1474,18 @@ class StitcherGUI(QMainWindow):
             blend_pixels = (0, 0)
             fusion_mode = "direct"
 
+        # Get flatfield if enabled
+        flatfield = self.flatfield if self.flatfield_checkbox.isChecked() else None
+        darkfield = self.darkfield if self.flatfield_checkbox.isChecked() else None
+
         self.worker = FusionWorker(
             self.drop_area.file_path,
             self.registration_checkbox.isChecked(),
             blend_pixels,
             self.downsample_spin.value(),
             fusion_mode,
+            flatfield=flatfield,
+            darkfield=darkfield,
         )
         self.worker.progress.connect(self.log)
         self.worker.finished.connect(self.on_fusion_finished)
@@ -950,11 +1540,17 @@ class StitcherGUI(QMainWindow):
         self.log_text.clear()
         self.log("Starting preview...")
 
+        # Get flatfield if enabled
+        flatfield = self.flatfield if self.flatfield_checkbox.isChecked() else None
+        darkfield = self.darkfield if self.flatfield_checkbox.isChecked() else None
+
         self.preview_worker = PreviewWorker(
             self.drop_area.file_path,
             self.preview_cols_spin.value(),
             self.preview_rows_spin.value(),
             self.downsample_spin.value(),
+            flatfield=flatfield,
+            darkfield=darkfield,
         )
         self.preview_worker.progress.connect(self.log)
         self.preview_worker.finished.connect(self.on_preview_finished)

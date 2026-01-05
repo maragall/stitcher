@@ -32,6 +32,7 @@ from .registration import (
 )
 from .fusion import accumulate_tile_shard, normalize_shard
 from .optimization import links_from_pairwise_metrics, solve_global, two_round_optimization
+from .flatfield import apply_flatfield, apply_flatfield_region
 from .io import (
     load_ome_tiff_metadata,
     load_individual_tiffs_metadata,
@@ -107,6 +108,8 @@ class TileFusion:
         channel_to_use: int = 0,
         multiscale_downsample: str = "stride",
         region: Optional[str] = None,
+        flatfield: Optional[np.ndarray] = None,
+        darkfield: Optional[np.ndarray] = None,
     ):
         self.tiff_path = Path(tiff_path)
         if not self.tiff_path.exists():
@@ -222,6 +225,23 @@ class TileFusion:
         self.pad = (0, 0)
         self.fused_ts = None
         self.center = None
+
+        # Flatfield correction (optional)
+        self._flatfield = flatfield  # Shape (C, Y, X) or None
+        self._darkfield = darkfield  # Shape (C, Y, X) or None
+
+        # Validate flatfield/darkfield shapes match tile dimensions
+        expected_shape = (self.channels, self.Y, self.X)
+        if flatfield is not None and flatfield.shape != expected_shape:
+            raise ValueError(
+                f"flatfield.shape {flatfield.shape} does not match expected "
+                f"tile shape {expected_shape} (channels, Y, X)"
+            )
+        if darkfield is not None and darkfield.shape != expected_shape:
+            raise ValueError(
+                f"darkfield.shape {darkfield.shape} does not match expected "
+                f"tile shape {expected_shape} (channels, Y, X)"
+            )
 
         # Thread-local storage for TiffFile handles (thread-safe concurrent access)
         self._thread_local = threading.local()
@@ -435,9 +455,9 @@ class TileFusion:
         if self._is_zarr_format:
             zarr_ts = self._metadata["tensorstore"]
             is_3d = self._metadata.get("is_3d", False)
-            return read_zarr_tile(zarr_ts, tile_idx, is_3d)
+            tile = read_zarr_tile(zarr_ts, tile_idx, is_3d)
         elif self._is_individual_tiffs_format:
-            return read_individual_tiffs_tile(
+            tile = read_individual_tiffs_tile(
                 self._metadata["image_folder"],
                 self._metadata["channel_names"],
                 self._metadata["tile_identifiers"],
@@ -447,7 +467,7 @@ class TileFusion:
                 time_folders=self._time_folders,
             )
         elif self._is_ome_tiff_tiles_format:
-            return read_ome_tiff_tiles_tile(
+            tile = read_ome_tiff_tiles_tile(
                 self._metadata["ome_tiff_folder"],
                 self._metadata["tile_identifiers"],
                 self._metadata["tile_file_map"],
@@ -459,7 +479,13 @@ class TileFusion:
         else:
             # Use thread-local handle for thread-safe concurrent reads
             handle = self._get_thread_local_handle()
-            return read_ome_tiff_tile(self.tiff_path, tile_idx, handle)
+            tile = read_ome_tiff_tile(self.tiff_path, tile_idx, handle)
+
+        # Apply flatfield correction if enabled
+        if self._flatfield is not None:
+            tile = apply_flatfield(tile, self._flatfield, self._darkfield)
+
+        return tile
 
     def _read_tile_region(
         self,
@@ -476,9 +502,11 @@ class TileFusion:
         if self._is_zarr_format:
             zarr_ts = self._metadata["tensorstore"]
             is_3d = self._metadata.get("is_3d", False)
-            return read_zarr_region(zarr_ts, tile_idx, y_slice, x_slice, self.channel_to_use, is_3d)
+            region = read_zarr_region(
+                zarr_ts, tile_idx, y_slice, x_slice, self.channel_to_use, is_3d
+            )
         elif self._is_individual_tiffs_format:
-            return read_individual_tiffs_region(
+            region = read_individual_tiffs_region(
                 self._metadata["image_folder"],
                 self._metadata["channel_names"],
                 self._metadata["tile_identifiers"],
@@ -491,7 +519,7 @@ class TileFusion:
                 time_folders=self._time_folders,
             )
         elif self._is_ome_tiff_tiles_format:
-            return read_ome_tiff_tiles_region(
+            region = read_ome_tiff_tiles_region(
                 self._metadata["ome_tiff_folder"],
                 self._metadata["tile_identifiers"],
                 self._metadata["tile_file_map"],
@@ -506,7 +534,15 @@ class TileFusion:
         else:
             # Use thread-local handle for thread-safe concurrent reads
             handle = self._get_thread_local_handle()
-            return read_ome_tiff_region(self.tiff_path, tile_idx, y_slice, x_slice, handle)
+            region = read_ome_tiff_region(self.tiff_path, tile_idx, y_slice, x_slice, handle)
+
+        # Apply flatfield correction if enabled
+        if self._flatfield is not None:
+            region = apply_flatfield_region(
+                region, self._flatfield, self._darkfield, y_slice, x_slice
+            )
+
+        return region
 
     # -------------------------------------------------------------------------
     # Registration
