@@ -28,243 +28,90 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QTextEdit,
     QFrame,
-    QGraphicsDropShadowEffect,
     QComboBox,
     QSlider,
     QRadioButton,
     QButtonGroup,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPropertyAnimation, QEasingCurve
-from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QColor, QPalette, QLinearGradient
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QDragEnterEvent, QDropEvent
 
 
 STYLE_SHEET = """
-QMainWindow {
-    background-color: #f5f5f7;
-}
-
-QWidget {
-    font-family: 'SF Pro Display', -apple-system, 'Segoe UI', sans-serif;
-    color: #1d1d1f;
-}
-
-QLabel#title {
-    font-size: 28px;
-    font-weight: 600;
-    color: #1d1d1f;
-    padding: 10px;
-}
-
-QLabel#subtitle {
-    font-size: 12px;
-    color: #86868b;
-    padding-bottom: 10px;
-}
-
 QGroupBox {
-    background-color: transparent;
-    border: none;
-    margin-top: 8px;
-    padding: 5px;
-    font-weight: 500;
+    font-weight: bold;
+    margin-top: 12px;
+    padding-top: 8px;
 }
-
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding: 0px 5px;
-    color: #0071e3;
-    font-size: 13px;
-    font-weight: 600;
+    padding: 0 4px;
 }
-
-QCheckBox {
-    spacing: 8px;
-    font-size: 13px;
-    color: #1d1d1f;
-}
-
-QCheckBox::indicator {
-    width: 18px;
-    height: 18px;
-    border-radius: 4px;
-    border: 2px solid #c7c7cc;
-    background-color: #ffffff;
-}
-
-QCheckBox::indicator:checked {
-    background-color: #0071e3;
-    border-color: #0071e3;
-}
-
-QCheckBox::indicator:hover {
-    border-color: #0071e3;
-}
-
-QSpinBox {
-    background-color: #ffffff;
-    border: 1px solid #c7c7cc;
-    border-radius: 6px;
-    padding: 5px 10px;
-    font-size: 13px;
-    min-width: 80px;
-    color: #1d1d1f;
-}
-
-QSpinBox:focus {
-    border-color: #0071e3;
-}
-
-QSpinBox::up-button, QSpinBox::down-button {
-    background-color: #f5f5f7;
-    border: none;
-    width: 20px;
-}
-
-QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-    background-color: #e8e8ed;
-}
-
 QPushButton#runButton {
     background-color: #0071e3;
     color: white;
-    font-size: 15px;
-    font-weight: 600;
+    font-weight: bold;
     border: none;
-    border-radius: 10px;
-    padding: 12px 24px;
+    border-radius: 6px;
+    padding: 10px 20px;
 }
-
 QPushButton#runButton:hover {
     background-color: #0077ed;
 }
-
 QPushButton#runButton:disabled {
     background-color: #c7c7cc;
-    color: #8e8e93;
 }
-
 QPushButton#napariButton {
     background-color: #34c759;
     color: white;
-    font-size: 15px;
-    font-weight: 600;
+    font-weight: bold;
     border: none;
-    border-radius: 10px;
-    padding: 12px 24px;
+    border-radius: 6px;
+    padding: 10px 20px;
 }
-
 QPushButton#napariButton:hover {
     background-color: #30d158;
 }
-
 QPushButton#napariButton:disabled {
     background-color: #c7c7cc;
-    color: #8e8e93;
 }
-
 QPushButton#previewButton {
     background-color: #ff9500;
     color: white;
-    font-size: 14px;
-    font-weight: 600;
+    font-weight: bold;
     border: none;
-    border-radius: 8px;
-    padding: 10px 20px;
+    border-radius: 6px;
+    padding: 8px 16px;
 }
-
 QPushButton#previewButton:hover {
     background-color: #ff9f0a;
 }
-
 QPushButton#previewButton:disabled {
     background-color: #c7c7cc;
-    color: #8e8e93;
 }
-
 QProgressBar {
-    background-color: #e8e8ed;
     border: none;
     border-radius: 4px;
-    height: 8px;
-    text-align: center;
+    height: 6px;
 }
-
 QProgressBar::chunk {
     background-color: #0071e3;
     border-radius: 4px;
 }
-
-QTextEdit {
-    background-color: #ffffff;
-    border: 1px solid #c7c7cc;
-    border-radius: 8px;
-    padding: 10px;
-    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-    font-size: 11px;
-    color: #1d1d1f;
-}
-
-QScrollBar:vertical {
-    background-color: #f5f5f7;
-    width: 8px;
-    border-radius: 4px;
-}
-
-QScrollBar::handle:vertical {
-    background-color: #c7c7cc;
-    border-radius: 4px;
-    min-height: 20px;
-}
-
-QScrollBar::handle:vertical:hover {
-    background-color: #8e8e93;
-}
-
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    height: 0px;
-}
-
-QRadioButton {
-    spacing: 8px;
-    font-size: 13px;
-    color: #1d1d1f;
-}
-
-QRadioButton::indicator {
-    width: 16px;
-    height: 16px;
-    border-radius: 8px;
-    border: 2px solid #c7c7cc;
-    background-color: #ffffff;
-}
-
-QRadioButton::indicator:checked {
-    background-color: #0071e3;
-    border-color: #0071e3;
-}
-
-QRadioButton::indicator:hover {
-    border-color: #0071e3;
-}
-
 QPushButton#calcFlatfieldButton {
     background-color: #5856d6;
     color: white;
-    font-size: 13px;
-    font-weight: 600;
+    font-weight: bold;
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
     padding: 8px 16px;
 }
-
 QPushButton#calcFlatfieldButton:hover {
     background-color: #6866e0;
 }
-
 QPushButton#calcFlatfieldButton:disabled {
     background-color: #c7c7cc;
-    color: #8e8e93;
 }
 """
 
@@ -628,39 +475,29 @@ class DropArea(QFrame):
     """Drag and drop area for files or folders."""
 
     fileDropped = pyqtSignal(str)
+    _default_style = "border: 2px dashed #888; border-radius: 8px; background: #fafafa;"
+    _hover_style = "border: 2px dashed #0071e3; border-radius: 8px; background: #e8f4ff;"
+    _active_style = "border: 2px solid #34c759; border-radius: 8px; background: #f0fff4;"
 
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True)
-        self.setFrameStyle(QFrame.StyledPanel | QFrame.Sunken)
-        self.setMinimumHeight(120)
-        self.setStyleSheet(
-            """
-            QFrame {
-                border: 2px dashed #c7c7cc;
-                border-radius: 12px;
-                background-color: #ffffff;
-            }
-            QFrame:hover {
-                border-color: #0071e3;
-                background-color: #f0f7ff;
-            }
-        """
-        )
+        self.setMinimumHeight(100)
+        self.setStyleSheet(self._default_style)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(8)
+        layout.setSpacing(4)
+        layout.setContentsMargins(12, 12, 12, 12)
 
         self.icon_label = QLabel("📂")
         self.icon_label.setAlignment(Qt.AlignCenter)
-        self.icon_label.setStyleSheet("font-size: 32px; border: none; background: transparent;")
+        self.icon_label.setStyleSheet("font-size: 28px; border: none; background: transparent;")
         layout.addWidget(self.icon_label)
 
-        self.label = QLabel("Drag & Drop OME-TIFF or SQUID folder\nor click to browse")
+        self.label = QLabel("Drop OME-TIFF or SQUID folder here\nor click to browse")
         self.label.setAlignment(Qt.AlignCenter)
-        self.label.setStyleSheet(
-            "color: #86868b; font-size: 13px; border: none; background: transparent;"
-        )
+        self.label.setWordWrap(True)
+        self.label.setStyleSheet("border: none; background: transparent;")
         layout.addWidget(self.label)
 
         self.file_path = None
@@ -668,49 +505,29 @@ class DropArea(QFrame):
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
-            self.setStyleSheet(
-                """
-                QFrame {
-                    border: 2px dashed #0071e3;
-                    border-radius: 12px;
-                    background-color: #e5f1ff;
-                }
-            """
-            )
+            self.setStyleSheet(self._hover_style)
 
     def dragLeaveEvent(self, event):
-        self.setStyleSheet(
-            """
-            QFrame {
-                border: 2px dashed #c7c7cc;
-                border-radius: 12px;
-                background-color: #ffffff;
-            }
-        """
-        )
+        if self.file_path:
+            self.setStyleSheet(self._active_style)
+        else:
+            self.setStyleSheet(self._default_style)
 
     def dropEvent(self, event: QDropEvent):
-        self.setStyleSheet(
-            """
-            QFrame {
-                border: 2px dashed #c7c7cc;
-                border-radius: 12px;
-                background-color: #ffffff;
-            }
-        """
-        )
-
         urls = event.mimeData().urls()
         if urls:
             file_path = urls[0].toLocalFile()
             path = Path(file_path)
-            # Accept TIFF files or folders (SQUID format)
             if path.is_dir() or file_path.endswith((".tif", ".tiff")):
                 self.setFile(file_path)
                 self.fileDropped.emit(file_path)
+            else:
+                self.setStyleSheet(self._default_style)
+        else:
+            self.setStyleSheet(self._default_style)
 
     def mousePressEvent(self, event):
-        from PyQt5.QtWidgets import QMenu, QAction
+        from PyQt5.QtWidgets import QMenu
 
         menu = QMenu(self)
         file_action = menu.addAction("Select OME-TIFF file...")
@@ -734,40 +551,28 @@ class DropArea(QFrame):
     def setFile(self, file_path):
         self.file_path = file_path
         path = Path(file_path)
+        self.setStyleSheet(self._active_style)
         self.icon_label.setText("✅")
         if path.is_dir():
             self.label.setText(f"📁 {path.name}")
         else:
             self.label.setText(path.name)
-        self.label.setStyleSheet(
-            "color: #34c759; font-size: 13px; font-weight: 600; border: none; background: transparent;"
-        )
 
 
 class FlatfieldDropArea(QFrame):
     """Small drag and drop area for flatfield .npy files."""
 
     fileDropped = pyqtSignal(str)
+    _default_style = "border: 2px dashed #888; border-radius: 8px; background: #fafafa;"
+    _hover_style = "border: 2px dashed #5856d6; border-radius: 8px; background: #f0f0ff;"
+    _active_style = "border: 2px solid #5856d6; border-radius: 8px; background: #f5f5ff;"
 
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True)
-        self.setFrameStyle(QFrame.StyledPanel | QFrame.Sunken)
         self.setMinimumHeight(60)
         self.setMaximumHeight(80)
-        self.setStyleSheet(
-            """
-            QFrame {
-                border: 2px dashed #c7c7cc;
-                border-radius: 8px;
-                background-color: #ffffff;
-            }
-            QFrame:hover {
-                border-color: #5856d6;
-                background-color: #f5f5ff;
-            }
-        """
-        )
+        self.setStyleSheet(self._default_style)
 
         layout = QHBoxLayout(self)
         layout.setSpacing(8)
@@ -776,10 +581,8 @@ class FlatfieldDropArea(QFrame):
         self.icon_label.setStyleSheet("font-size: 20px; border: none; background: transparent;")
         layout.addWidget(self.icon_label)
 
-        self.label = QLabel("Drop flatfield .npy file here or click to browse")
-        self.label.setStyleSheet(
-            "color: #86868b; font-size: 12px; border: none; background: transparent;"
-        )
+        self.label = QLabel("Drop flatfield .npy here or click to browse")
+        self.label.setStyleSheet("border: none; background: transparent;")
         layout.addWidget(self.label)
         layout.addStretch()
 
@@ -788,44 +591,25 @@ class FlatfieldDropArea(QFrame):
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
-            self.setStyleSheet(
-                """
-                QFrame {
-                    border: 2px dashed #5856d6;
-                    border-radius: 8px;
-                    background-color: #ebebff;
-                }
-            """
-            )
+            self.setStyleSheet(self._hover_style)
 
     def dragLeaveEvent(self, event):
-        self.setStyleSheet(
-            """
-            QFrame {
-                border: 2px dashed #c7c7cc;
-                border-radius: 8px;
-                background-color: #ffffff;
-            }
-        """
-        )
+        if self.file_path:
+            self.setStyleSheet(self._active_style)
+        else:
+            self.setStyleSheet(self._default_style)
 
     def dropEvent(self, event: QDropEvent):
-        self.setStyleSheet(
-            """
-            QFrame {
-                border: 2px dashed #c7c7cc;
-                border-radius: 8px;
-                background-color: #ffffff;
-            }
-        """
-        )
-
         urls = event.mimeData().urls()
         if urls:
             file_path = urls[0].toLocalFile()
             if file_path.endswith(".npy"):
                 self.setFile(file_path)
                 self.fileDropped.emit(file_path)
+            else:
+                self.setStyleSheet(self._default_style)
+        else:
+            self.setStyleSheet(self._default_style)
 
     def mousePressEvent(self, event):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -838,19 +622,15 @@ class FlatfieldDropArea(QFrame):
     def setFile(self, file_path):
         self.file_path = file_path
         path = Path(file_path)
+        self.setStyleSheet(self._active_style)
         self.icon_label.setText("✅")
         self.label.setText(path.name)
-        self.label.setStyleSheet(
-            "color: #5856d6; font-size: 12px; font-weight: 600; border: none; background: transparent;"
-        )
 
     def clear(self):
         self.file_path = None
+        self.setStyleSheet(self._default_style)
         self.icon_label.setText("📄")
-        self.label.setText("Drop flatfield .npy file here or click to browse")
-        self.label.setStyleSheet(
-            "color: #86868b; font-size: 12px; border: none; background: transparent;"
-        )
+        self.label.setText("Drop flatfield .npy here or click to browse")
 
 
 class FlatfieldWorker(QThread):
@@ -940,16 +720,10 @@ class StitcherGUI(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
 
-        # Title
-        title = QLabel("Stitcher")
-        title.setObjectName("title")
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
-
-        # Drop area
+        # Input drop area (no wrapper group to avoid double border)
         self.drop_area = DropArea()
         self.drop_area.fileDropped.connect(self.on_file_dropped)
         layout.addWidget(self.drop_area)
@@ -958,12 +732,12 @@ class StitcherGUI(QMainWindow):
         preview_group = QGroupBox("Preview")
         preview_layout = QHBoxLayout(preview_group)
 
-        preview_layout.addWidget(QLabel("Grid size:"))
+        preview_layout.addWidget(QLabel("Grid:"))
 
         self.preview_cols_spin = QSpinBox()
         self.preview_cols_spin.setRange(2, 15)
         self.preview_cols_spin.setValue(5)
-        self.preview_cols_spin.setFixedWidth(60)
+        self.preview_cols_spin.setFixedWidth(55)
         preview_layout.addWidget(self.preview_cols_spin)
 
         preview_layout.addWidget(QLabel("x"))
@@ -971,7 +745,7 @@ class StitcherGUI(QMainWindow):
         self.preview_rows_spin = QSpinBox()
         self.preview_rows_spin.setRange(2, 15)
         self.preview_rows_spin.setValue(5)
-        self.preview_rows_spin.setFixedWidth(60)
+        self.preview_rows_spin.setFixedWidth(55)
         preview_layout.addWidget(self.preview_rows_spin)
 
         preview_layout.addStretch()
@@ -988,19 +762,17 @@ class StitcherGUI(QMainWindow):
         # Flatfield correction section
         flatfield_group = QGroupBox("Flatfield Correction")
         flatfield_layout = QVBoxLayout(flatfield_group)
-        flatfield_layout.setSpacing(10)
+        flatfield_layout.setSpacing(8)
 
-        # Enable flatfield checkbox
         self.flatfield_checkbox = QCheckBox("Enable flatfield correction")
-        self.flatfield_checkbox.setChecked(True)  # Default enabled
-        self.flatfield_checkbox.setMinimumHeight(32)
+        self.flatfield_checkbox.setChecked(True)
         self.flatfield_checkbox.toggled.connect(self.on_flatfield_toggled)
         flatfield_layout.addWidget(self.flatfield_checkbox)
 
         # Container for flatfield options (shown when enabled)
         self.flatfield_options_widget = QWidget()
         flatfield_options_layout = QVBoxLayout(self.flatfield_options_widget)
-        flatfield_options_layout.setContentsMargins(24, 0, 0, 0)
+        flatfield_options_layout.setContentsMargins(20, 0, 0, 0)
         flatfield_options_layout.setSpacing(8)
 
         # Radio buttons for Calculate vs Load
@@ -1025,12 +797,10 @@ class StitcherGUI(QMainWindow):
         calc_options_layout.setContentsMargins(0, 0, 0, 0)
         calc_options_layout.setSpacing(8)
 
-        # Darkfield checkbox
         self.darkfield_checkbox = QCheckBox("Include darkfield correction")
         self.darkfield_checkbox.setChecked(False)
         calc_options_layout.addWidget(self.darkfield_checkbox)
 
-        # Calculate and save buttons
         calc_btn_layout = QHBoxLayout()
         self.calc_flatfield_button = QPushButton("Calculate Flatfield")
         self.calc_flatfield_button.setObjectName("calcFlatfieldButton")
@@ -1045,7 +815,6 @@ class StitcherGUI(QMainWindow):
         self.save_flatfield_button.setEnabled(False)
         self.save_flatfield_button.setToolTip("Save calculated flatfield to .npy file")
         calc_btn_layout.addWidget(self.save_flatfield_button)
-
         calc_btn_layout.addStretch()
         calc_options_layout.addLayout(calc_btn_layout)
 
@@ -1090,118 +859,99 @@ class StitcherGUI(QMainWindow):
 
         flatfield_layout.addWidget(self.flatfield_options_widget)
 
-        # Connect radio button signals
         self.flatfield_mode_group.buttonClicked.connect(self.on_flatfield_mode_changed)
 
         layout.addWidget(flatfield_group)
 
-        # Registration settings
-        reg_group = QGroupBox("Settings")
-        reg_layout = QVBoxLayout(reg_group)
-        reg_layout.setSpacing(10)
+        # Settings
+        settings_group = QGroupBox("Settings")
+        settings_layout = QVBoxLayout(settings_group)
+        settings_layout.setSpacing(8)
 
         self.registration_checkbox = QCheckBox("Enable registration refinement")
         self.registration_checkbox.setChecked(False)
-        self.registration_checkbox.setMinimumHeight(32)
         self.registration_checkbox.toggled.connect(self.on_registration_toggled)
-        reg_layout.addWidget(self.registration_checkbox)
+        settings_layout.addWidget(self.registration_checkbox)
 
-        # Downsample factor (only shown when registration enabled)
+        # Downsample factor (shown when registration enabled)
         self.downsample_widget = QWidget()
-        self.downsample_widget.setMinimumHeight(36)
         self.downsample_widget.setVisible(False)
         downsample_layout = QHBoxLayout(self.downsample_widget)
-        downsample_layout.setContentsMargins(24, 0, 0, 0)
-
-        downsample_label = QLabel("Downsample factor:")
-        downsample_layout.addWidget(downsample_label)
-
+        downsample_layout.setContentsMargins(20, 0, 0, 0)
+        downsample_layout.addWidget(QLabel("Downsample:"))
         self.downsample_spin = QSpinBox()
         self.downsample_spin.setRange(1, 8)
         self.downsample_spin.setValue(2)
-        self.downsample_spin.setToolTip("Lower values = slower but more accurate registration")
+        self.downsample_spin.setToolTip("Lower = slower but more accurate")
         downsample_layout.addWidget(self.downsample_spin)
-
         downsample_layout.addStretch()
-        reg_layout.addWidget(self.downsample_widget)
+        settings_layout.addWidget(self.downsample_widget)
 
-        # Blending checkbox (same level as registration)
         self.blend_checkbox = QCheckBox("Enable blending")
         self.blend_checkbox.setChecked(False)
-        self.blend_checkbox.setMinimumHeight(32)
         self.blend_checkbox.toggled.connect(self.on_blend_toggled)
-        reg_layout.addWidget(self.blend_checkbox)
+        settings_layout.addWidget(self.blend_checkbox)
 
-        # Blend pixels value (indented under blending)
+        # Blend pixels (shown when blending enabled)
         self.blend_value_widget = QWidget()
-        self.blend_value_widget.setMinimumHeight(36)
         self.blend_value_widget.setVisible(False)
         blend_value_layout = QHBoxLayout(self.blend_value_widget)
-        blend_value_layout.setContentsMargins(24, 0, 0, 0)
-
-        blend_label = QLabel("Blend pixels:")
-        blend_value_layout.addWidget(blend_label)
-
+        blend_value_layout.setContentsMargins(20, 0, 0, 0)
+        blend_value_layout.addWidget(QLabel("Blend pixels:"))
         self.blend_spin = QSpinBox()
         self.blend_spin.setRange(1, 500)
         self.blend_spin.setValue(50)
         blend_value_layout.addWidget(self.blend_spin)
-
         blend_value_layout.addStretch()
-        reg_layout.addWidget(self.blend_value_widget)
+        settings_layout.addWidget(self.blend_value_widget)
 
-        layout.addWidget(reg_group)
+        layout.addWidget(settings_group)
 
         # Run button
-        self.run_button = QPushButton("▶  Run Stitching")
+        self.run_button = QPushButton("▶ Run Stitching")
         self.run_button.setObjectName("runButton")
-        self.run_button.setMinimumHeight(48)
+        self.run_button.setMinimumHeight(40)
         self.run_button.setCursor(Qt.PointingHandCursor)
         self.run_button.clicked.connect(self.run_stitching)
         self.run_button.setEnabled(False)
         layout.addWidget(self.run_button)
 
-        # Progress
+        # Progress bar
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)  # Indeterminate
+        self.progress_bar.setRange(0, 0)
         self.progress_bar.setVisible(False)
-        self.progress_bar.setMinimumHeight(8)
-        self.progress_bar.setMaximumHeight(8)
+        self.progress_bar.setMaximumHeight(6)
         layout.addWidget(self.progress_bar)
 
         # Log output
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMinimumHeight(120)
-        self.log_text.setMaximumHeight(150)
-        self.log_text.setPlaceholderText("Log output will appear here...")
+        self.log_text.setMinimumHeight(100)
+        self.log_text.setMaximumHeight(140)
+        self.log_text.setPlaceholderText("Log output...")
         layout.addWidget(self.log_text)
 
-        # Region selection (hidden by default, shown for multi-region outputs)
+        # Region selection (for multi-region outputs)
         self.region_widget = QWidget()
         self.region_widget.setVisible(False)
         region_layout = QHBoxLayout(self.region_widget)
         region_layout.setContentsMargins(0, 0, 0, 0)
-
         region_layout.addWidget(QLabel("Region:"))
-
         self.region_combo = QComboBox()
         self.region_combo.setMinimumWidth(100)
         self.region_combo.currentIndexChanged.connect(self._on_region_combo_changed)
         region_layout.addWidget(self.region_combo)
-
         self.region_slider = QSlider(Qt.Horizontal)
         self.region_slider.setMinimum(0)
         self.region_slider.setMaximum(0)
         self.region_slider.valueChanged.connect(self._on_region_slider_changed)
         region_layout.addWidget(self.region_slider)
-
         layout.addWidget(self.region_widget)
 
         # Open in Napari button
-        self.napari_button = QPushButton("🔬  Open in Napari")
+        self.napari_button = QPushButton("🔬 Open in Napari")
         self.napari_button.setObjectName("napariButton")
-        self.napari_button.setMinimumHeight(48)
+        self.napari_button.setMinimumHeight(40)
         self.napari_button.setCursor(Qt.PointingHandCursor)
         self.napari_button.clicked.connect(self.open_in_napari)
         self.napari_button.setEnabled(False)

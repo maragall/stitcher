@@ -55,6 +55,10 @@ gui = [
     "napari>=0.4.18",
     "ome-zarr>=0.8",
 ]
+flatfield = [
+    "basicpy @ git+https://github.com/QI2lab/BaSiCPy.git",
+    "matplotlib>=3.5",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -63,7 +67,7 @@ dev = [
     "mypy>=1.0",
 ]
 all = [
-    "tilefusion[gpu,gui,dev]",
+    "tilefusion[gpu,gui,flatfield,dev]",
 ]
 
 [project.scripts]
@@ -75,6 +79,9 @@ Homepage = "https://github.com/cephla/tilefusion"
 Documentation = "https://github.com/cephla/tilefusion#readme"
 Repository = "https://github.com/cephla/tilefusion"
 Issues = "https://github.com/cephla/tilefusion/issues"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tilefusion", "gui", "scripts"]
