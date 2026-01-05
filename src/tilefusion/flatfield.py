@@ -64,9 +64,7 @@ def calculate_flatfield(
     # Validate tile dimensionality: only 2D (Y, X) or 3D (C, Y, X) supported
     for i, t in enumerate(tiles):
         if t.ndim not in (2, 3):
-            raise ValueError(
-                f"Tile {i} has {t.ndim} dimensions; expected 2 (Y, X) or 3 (C, Y, X)"
-            )
+            raise ValueError(f"Tile {i} has {t.ndim} dimensions; expected 2 (Y, X) or 3 (C, Y, X)")
 
     # Support 2D (Y, X) arrays by converting to 3D (1, Y, X)
     tiles = [t[np.newaxis, ...] if t.ndim == 2 else t for t in tiles]
