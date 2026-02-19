@@ -110,6 +110,8 @@ class TileFusion:
         region: Optional[str] = None,
         flatfield: Optional[np.ndarray] = None,
         darkfield: Optional[np.ndarray] = None,
+        registration_z: Optional[int] = None,
+        registration_t: int = 0,
     ):
         self.tiff_path = Path(tiff_path)
         if not self.tiff_path.exists():
@@ -193,6 +195,18 @@ class TileFusion:
         self.dz_um = self._metadata.get("dz_um", 1.0)
         self._time_folders = self._metadata.get("time_folders", None)
         self._middle_z = self.n_z // 2  # Use middle z-level for registration
+
+        # Registration z/t selection (validate after n_z/n_t are known)
+        if registration_z is None:
+            self._registration_z = self._middle_z
+        else:
+            if registration_z < 0 or registration_z >= self.n_z:
+                raise ValueError(f"registration_z={registration_z} out of range [0, {self.n_z})")
+            self._registration_z = registration_z
+
+        if registration_t < 0 or registration_t >= self.n_t:
+            raise ValueError(f"registration_t={registration_t} out of range [0, {self.n_t})")
+        self._registration_t = registration_t
 
         # Configuration
         self.downsample_factors = tuple(downsample_factors)
@@ -447,10 +461,12 @@ class TileFusion:
     # I/O methods (delegate to format-specific loaders)
     # -------------------------------------------------------------------------
 
-    def _read_tile(self, tile_idx: int, z_level: int = None, time_idx: int = 0) -> np.ndarray:
+    def _read_tile(self, tile_idx: int, z_level: int = None, time_idx: int = None) -> np.ndarray:
         """Read a single tile from the input data (all channels)."""
         if z_level is None:
-            z_level = self._middle_z  # Default to middle z for registration
+            z_level = self._registration_z  # Default to registration z-level
+        if time_idx is None:
+            time_idx = self._registration_t  # Default to registration timepoint
 
         if self._is_zarr_format:
             zarr_ts = self._metadata["tensorstore"]
@@ -493,11 +509,13 @@ class TileFusion:
         y_slice: slice,
         x_slice: slice,
         z_level: int = None,
-        time_idx: int = 0,
+        time_idx: int = None,
     ) -> np.ndarray:
         """Read a region of a tile from the input data."""
         if z_level is None:
-            z_level = self._middle_z  # Default to middle z for registration
+            z_level = self._registration_z  # Default to registration z-level
+        if time_idx is None:
+            time_idx = self._registration_t  # Default to registration timepoint
 
         if self._is_zarr_format:
             zarr_ts = self._metadata["tensorstore"]
