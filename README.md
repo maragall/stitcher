@@ -29,7 +29,7 @@ pre-commit install  # Enable automatic formatting on commit
 # With GUI support
 pip install -e ".[gui]"
 
-# With GPU support (requires CUDA)
+# With GPU support (Linux only, requires CUDA)
 pip install -e ".[gpu]"
 
 # Full installation (GPU + GUI + dev tools)
@@ -41,7 +41,7 @@ pip install -e ".[all]"
 ```bash
 pip install tilefusion
 pip install tilefusion[gui]  # With GUI
-pip install tilefusion[gpu]  # With GPU support
+pip install tilefusion[gpu]  # With GPU support (Linux only)
 ```
 
 ## Quick Start

@@ -47,8 +47,8 @@ dependencies = [
 
 [project.optional-dependencies]
 gpu = [
-    "cupy-cuda12x>=12.0",
-    "cucim>=23.0",
+    "cupy-cuda12x>=12.0; sys_platform == 'linux'",
+    "cucim>=23.0; sys_platform == 'linux'",
 ]
 gui = [
     "PyQt5>=5.15",
