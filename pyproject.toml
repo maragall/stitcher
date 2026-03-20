@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "GPU/CPU-accelerated tile registration and fusion for 2D microscopy"
 readme = "README.md"
 license = "BSD-3-Clause"
-requires-python = ">=3.9"
+requires-python = ">=3.9,<3.14"
 authors = [
     { name = "Cephla" },
 ]
@@ -30,6 +30,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Image Processing",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
@@ -88,7 +89,7 @@ packages = ["src/tilefusion", "gui", "scripts"]
 
 [tool.black]
 line-length = 100
-target-version = ["py39", "py310", "py311", "py312"]
+target-version = ["py39", "py310", "py311", "py312", "py313"]
 include = '\.pyi?$'
 exclude = '''
 /(
