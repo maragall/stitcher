@@ -32,9 +32,11 @@ from PyQt5.QtWidgets import (
     QSlider,
     QRadioButton,
     QButtonGroup,
+    QMessageBox,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QDragEnterEvent, QDropEvent
+from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QIcon, QPixmap, QPainter
+from PyQt5.QtSvg import QSvgRenderer
 
 
 STYLE_SHEET = """
@@ -239,7 +241,10 @@ class PreviewWorker(QThread):
             self.progress.emit(f"Found {len(tf.pairwise_metrics)} pairs")
 
             tf.optimize_shifts(
-                method="TWO_ROUND_ITERATIVE", rel_thresh=0.5, abs_thresh=2.0, iterative=True
+                method="TWO_ROUND_ITERATIVE",
+                rel_thresh=self.outlier_rel_thresh,
+                abs_thresh=self.outlier_abs_thresh,
+                iterative=True,
             )
             global_offsets = tf.global_offsets
 
@@ -344,6 +349,8 @@ class FusionWorker(QThread):
         registration_z=None,
         registration_t=0,
         registration_channel=0,
+        outlier_rel_thresh=0.5,
+        outlier_abs_thresh=2.0,
     ):
         super().__init__()
         self.tiff_path = tiff_path
@@ -356,6 +363,8 @@ class FusionWorker(QThread):
         self.registration_z = registration_z
         self.registration_t = registration_t
         self.registration_channel = registration_channel
+        self.outlier_rel_thresh = outlier_rel_thresh
+        self.outlier_abs_thresh = outlier_abs_thresh
         self.output_path = None
 
     def run(self):
@@ -382,19 +391,43 @@ class FusionWorker(QThread):
             if output_folder.exists():
                 shutil.rmtree(output_folder)
 
-            # Also remove metrics if not doing registration
-            metrics_path = Path(self.tiff_path).parent / "metrics.json"
-            if metrics_path.exists():
-                metrics_path.unlink()
-            # Remove multi-region metrics
+            # Metrics will be saved inside the output .ome.zarr directory
+            # Clean up any old metrics from previous runs in the parent dir
+            old_metrics = Path(self.tiff_path).parent / "metrics.json"
+            if old_metrics.exists():
+                old_metrics.unlink()
             for m in Path(self.tiff_path).parent.glob("metrics_*.json"):
                 m.unlink()
 
             step_start = time.time()
+
+            # Auto-compute blend_pixels from tile overlap if requested
+            blend_pixels = self.blend_pixels
+            if blend_pixels is None:
+                # Create a temporary TileFusion to detect overlap
+                from tilefusion.registration import find_adjacent_pairs
+                tf_temp = TileFusion(self.tiff_path)
+                pairs = find_adjacent_pairs(
+                    tf_temp._tile_positions, tf_temp._pixel_size, (tf_temp.Y, tf_temp.X)
+                )
+                if pairs:
+                    import numpy as np
+                    # Use median overlap across all pairs, take half as blend width
+                    overlaps_y = [p[4] for p in pairs if p[4] > 0]
+                    overlaps_x = [p[5] for p in pairs if p[5] > 0]
+                    median_overlap_y = int(np.median(overlaps_y)) if overlaps_y else 50
+                    median_overlap_x = int(np.median(overlaps_x)) if overlaps_x else 50
+                    blend_pixels = (max(median_overlap_y // 2, 10), max(median_overlap_x // 2, 10))
+                    self.progress.emit(f"Auto blend width: {blend_pixels[0]}px (Y), {blend_pixels[1]}px (X)")
+                else:
+                    blend_pixels = (50, 50)
+                    self.progress.emit("No adjacent pairs detected — using default 50px blend")
+                del tf_temp
+
             tf = TileFusion(
                 self.tiff_path,
                 output_path=output_path,
-                blend_pixels=self.blend_pixels,
+                blend_pixels=blend_pixels,
                 downsample_factors=(self.downsample_factor, self.downsample_factor),
                 flatfield=self.flatfield,
                 darkfield=self.darkfield,
@@ -418,9 +451,11 @@ class FusionWorker(QThread):
 
             # Registration step
             step_start = time.time()
+            metrics_path = output_path / "metrics.json"
             if self.do_registration:
                 self.progress.emit("Computing registration...")
                 tf.refine_tile_positions_with_cross_correlation()
+                output_path.mkdir(parents=True, exist_ok=True)
                 tf.save_pairwise_metrics(metrics_path)
                 reg_time = time.time() - step_start
                 self.progress.emit(
@@ -434,7 +469,10 @@ class FusionWorker(QThread):
             step_start = time.time()
             self.progress.emit("Optimizing positions...")
             tf.optimize_shifts(
-                method="TWO_ROUND_ITERATIVE", rel_thresh=0.5, abs_thresh=2.0, iterative=True
+                method="TWO_ROUND_ITERATIVE",
+                rel_thresh=self.outlier_rel_thresh,
+                abs_thresh=self.outlier_abs_thresh,
+                iterative=True,
             )
             gc.collect()
 
@@ -723,8 +761,9 @@ class StitcherGUI(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Stitcher")
+        self.setWindowTitle("Cephla Stitcher")
         self.setMinimumSize(580, 850)
+        self._set_cephla_icon()
 
         self.worker = None
         self.output_path = None
@@ -946,22 +985,57 @@ class StitcherGUI(QMainWindow):
         settings_layout.addWidget(self.reg_zt_widget)
 
         self.blend_checkbox = QCheckBox("Enable blending")
-        self.blend_checkbox.setChecked(False)
+        self.blend_checkbox.setChecked(True)
         self.blend_checkbox.toggled.connect(self.on_blend_toggled)
         settings_layout.addWidget(self.blend_checkbox)
 
         # Blend pixels (shown when blending enabled)
         self.blend_value_widget = QWidget()
-        self.blend_value_widget.setVisible(False)
+        self.blend_value_widget.setVisible(True)
         blend_value_layout = QHBoxLayout(self.blend_value_widget)
         blend_value_layout.setContentsMargins(20, 0, 0, 0)
         blend_value_layout.addWidget(QLabel("Blend pixels:"))
+        self.blend_auto_checkbox = QCheckBox("Auto")
+        self.blend_auto_checkbox.setChecked(True)
+        self.blend_auto_checkbox.setToolTip("Auto-compute blend width as half the tile overlap")
+        self.blend_auto_checkbox.toggled.connect(lambda checked: self.blend_spin.setEnabled(not checked))
+        blend_value_layout.addWidget(self.blend_auto_checkbox)
         self.blend_spin = QSpinBox()
         self.blend_spin.setRange(1, 500)
         self.blend_spin.setValue(50)
+        self.blend_spin.setEnabled(False)
         blend_value_layout.addWidget(self.blend_spin)
         blend_value_layout.addStretch()
         settings_layout.addWidget(self.blend_value_widget)
+
+        # Outlier threshold controls (shown when registration enabled)
+        self.outlier_widget = QWidget()
+        self.outlier_widget.setVisible(False)
+        outlier_layout = QHBoxLayout(self.outlier_widget)
+        outlier_layout.setContentsMargins(20, 0, 0, 0)
+        outlier_layout.addWidget(QLabel("Outlier rel:"))
+        self.outlier_rel_spin = QSpinBox()
+        self.outlier_rel_spin.setRange(1, 200)
+        self.outlier_rel_spin.setValue(50)
+        self.outlier_rel_spin.setSuffix("%")
+        self.outlier_rel_spin.setToolTip("Relative threshold: reject links with residual > this % of median")
+        self.outlier_rel_spin.setFixedWidth(80)
+        outlier_layout.addWidget(self.outlier_rel_spin)
+        outlier_layout.addWidget(QLabel("abs:"))
+        self.outlier_abs_spin = QSpinBox()
+        self.outlier_abs_spin.setRange(1, 50)
+        self.outlier_abs_spin.setValue(2)
+        self.outlier_abs_spin.setSuffix("px")
+        self.outlier_abs_spin.setToolTip("Absolute threshold: minimum residual (pixels) to reject a link")
+        self.outlier_abs_spin.setFixedWidth(80)
+        outlier_layout.addWidget(self.outlier_abs_spin)
+        outlier_layout.addStretch()
+        settings_layout.addWidget(self.outlier_widget)
+
+        # Show outlier controls when registration is enabled
+        self.registration_checkbox.toggled.connect(
+            lambda checked: self.outlier_widget.setVisible(checked)
+        )
 
         layout.addWidget(settings_group)
 
@@ -1015,7 +1089,53 @@ class StitcherGUI(QMainWindow):
         self.napari_button.setEnabled(False)
         layout.addWidget(self.napari_button)
 
+        # Additional action buttons row
+        actions_layout = QHBoxLayout()
+
+        self.mip_button = QPushButton("Max Projection")
+        self.mip_button.setCursor(Qt.PointingHandCursor)
+        self.mip_button.setToolTip("Compute max intensity projection of 3D result")
+        self.mip_button.clicked.connect(self.compute_mip)
+        self.mip_button.setEnabled(False)
+        actions_layout.addWidget(self.mip_button)
+
+        self.export_tiff_button = QPushButton("Export OME-TIFF")
+        self.export_tiff_button.setCursor(Qt.PointingHandCursor)
+        self.export_tiff_button.setToolTip("Export stitched result as a single OME-TIFF file")
+        self.export_tiff_button.clicked.connect(self.export_ome_tiff)
+        self.export_tiff_button.setEnabled(False)
+        actions_layout.addWidget(self.export_tiff_button)
+
+        self.open_existing_button = QPushButton("Open Existing")
+        self.open_existing_button.setCursor(Qt.PointingHandCursor)
+        self.open_existing_button.setToolTip("Open a previously stitched .ome.zarr in Napari")
+        self.open_existing_button.clicked.connect(self.open_existing_in_napari)
+        actions_layout.addWidget(self.open_existing_button)
+
+        layout.addLayout(actions_layout)
+
         layout.addStretch()
+
+        # Subtle branding
+        brand_label = QLabel("cephla")
+        brand_label.setAlignment(Qt.AlignCenter)
+        brand_label.setStyleSheet(
+            "color: rgba(49, 196, 243, 40); font-size: 10px; "
+            "letter-spacing: 4px; padding: 2px;"
+        )
+        layout.addWidget(brand_label)
+
+    def _set_cephla_icon(self):
+        """Set the Cephla logo as window icon."""
+        logo_path = Path(__file__).parent / "cephla_logo.svg"
+        if logo_path.exists():
+            renderer = QSvgRenderer(str(logo_path))
+            pixmap = QPixmap(64, 64)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            renderer.render(painter)
+            painter.end()
+            self.setWindowIcon(QIcon(pixmap))
 
     def on_file_dropped(self, file_path):
         path = Path(file_path)
@@ -1076,7 +1196,10 @@ class StitcherGUI(QMainWindow):
             self.on_flatfield_dropped(str(flatfield_path))
             self.flatfield_drop_area.setFile(str(flatfield_path))
         else:
-            self.flatfield_checkbox.setChecked(False)
+            # Auto-calculate flatfield instead of silently disabling correction
+            self.flatfield_checkbox.setChecked(True)
+            self.log("No existing flatfield found — auto-calculating from tiles...")
+            self._auto_calculate_flatfield()
 
     def on_registration_toggled(self, checked):
         self.downsample_widget.setVisible(checked)
@@ -1127,6 +1250,45 @@ class StitcherGUI(QMainWindow):
         is_calculate = self.calc_radio.isChecked()
         self.calc_options_widget.setVisible(is_calculate)
         self.load_options_widget.setVisible(not is_calculate)
+
+    def _auto_calculate_flatfield(self):
+        """Auto-calculate flatfield when no .npy file exists for the loaded dataset."""
+        if not self.drop_area.file_path:
+            self.flatfield_checkbox.setChecked(False)
+            return
+
+        try:
+            from tilefusion import HAS_BASICPY
+
+            if not HAS_BASICPY:
+                self.log("BaSiCPy not installed — flatfield correction disabled.")
+                self.flatfield_checkbox.setChecked(False)
+                return
+        except ImportError:
+            self.flatfield_checkbox.setChecked(False)
+            return
+
+        self.flatfield_status.setText("Auto-calculating flatfield...")
+        self.flatfield_status.setStyleSheet("color: #ff9500; font-size: 11px;")
+        self.calc_flatfield_button.setEnabled(False)
+
+        self.flatfield_worker = FlatfieldWorker(
+            self.drop_area.file_path,
+            n_samples=50,
+            use_darkfield=self.darkfield_checkbox.isChecked(),
+        )
+        self.flatfield_worker.progress.connect(self.log)
+        self.flatfield_worker.finished.connect(self.on_flatfield_calculated)
+        self.flatfield_worker.error.connect(self._on_auto_flatfield_error)
+        self.flatfield_worker.start()
+
+    def _on_auto_flatfield_error(self, error_msg):
+        """Handle auto-flatfield calculation failure gracefully."""
+        self.calc_flatfield_button.setEnabled(True)
+        self.flatfield_checkbox.setChecked(False)
+        self.flatfield_status.setText("Auto-calculation failed — disabled")
+        self.flatfield_status.setStyleSheet("color: #ff3b30; font-size: 11px;")
+        self.log(f"Auto-flatfield failed: {error_msg}")
 
     def calculate_flatfield(self):
         if not self.drop_area.file_path:
@@ -1335,8 +1497,11 @@ class StitcherGUI(QMainWindow):
         self.log_text.clear()
 
         if self.blend_checkbox.isChecked():
-            blend_val = self.blend_spin.value()
-            blend_pixels = (blend_val, blend_val)
+            if self.blend_auto_checkbox.isChecked():
+                blend_pixels = None  # Auto-compute from overlap in FusionWorker
+            else:
+                blend_val = self.blend_spin.value()
+                blend_pixels = (blend_val, blend_val)
             fusion_mode = "blended"
         else:
             blend_pixels = (0, 0)
@@ -1364,6 +1529,8 @@ class StitcherGUI(QMainWindow):
             registration_z=registration_z,
             registration_t=registration_t,
             registration_channel=registration_channel,
+            outlier_rel_thresh=self.outlier_rel_spin.value() / 100.0,
+            outlier_abs_thresh=float(self.outlier_abs_spin.value()),
         )
         self.worker.progress.connect(self.log)
         self.worker.finished.connect(self.on_fusion_finished)
@@ -1375,6 +1542,8 @@ class StitcherGUI(QMainWindow):
         self.progress_bar.setVisible(False)
         self.run_button.setEnabled(True)
         self.napari_button.setEnabled(True)
+        self.mip_button.setEnabled(True)
+        self.export_tiff_button.setEnabled(True)
 
         # Check if this is a multi-region output folder
         output_dir = Path(output_path)
@@ -1402,6 +1571,17 @@ class StitcherGUI(QMainWindow):
         time_str = f"{minutes}m {seconds:.1f}s" if minutes > 0 else f"{seconds:.1f}s"
 
         self.log(f"\n✓ Fusion complete! Time: {time_str}\nOutput: {output_path}")
+
+        # Prompt user to open result in Napari
+        reply = QMessageBox.question(
+            self,
+            "Stitching Complete",
+            "Opening result in Napari. Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            self.open_in_napari()
 
     def on_fusion_error(self, error_msg):
         self.progress_bar.setVisible(False)
@@ -1674,6 +1854,128 @@ class StitcherGUI(QMainWindow):
             napari.run()
         except Exception as e:
             self.log(f"Error opening Napari: {e}")
+
+
+    def compute_mip(self):
+        """Compute and display max intensity projection in Napari."""
+        if not self.output_path:
+            return
+
+        try:
+            import napari
+            import tensorstore as ts
+            import numpy as np
+
+            zarr_path = Path(self.output_path)
+            if self.is_multi_region and self.regions:
+                selected_region = self.region_combo.currentText()
+                zarr_path = zarr_path / f"{selected_region}.ome.zarr"
+
+            scale0 = zarr_path / "scale0" / "image"
+            if not scale0.exists():
+                self.log("No image data found for MIP")
+                return
+
+            store = ts.open(
+                {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(scale0)}}
+            ).result()
+            shape = store.shape
+            is_5d = len(shape) == 5
+
+            if not is_5d or shape[2] <= 1:
+                self.log("Dataset is 2D — max projection not applicable")
+                return
+
+            self.log(f"Computing max intensity projection (Z={shape[2]} planes)...")
+            viewer = napari.Viewer()
+            n_channels = shape[1]
+
+            channel_colors = ["blue", "green", "yellow", "red", "magenta", "cyan"]
+            for c in range(n_channels):
+                # Read all Z for t=0, this channel
+                vol = store[0, c, :, :, :].read().result()
+                mip = np.max(np.asarray(vol), axis=0)
+                viewer.add_image(
+                    mip,
+                    name=f"MIP Ch{c}",
+                    colormap=channel_colors[c % len(channel_colors)],
+                    blending="additive",
+                )
+            napari.run()
+        except Exception as e:
+            self.log(f"Error computing MIP: {e}")
+
+    def export_ome_tiff(self):
+        """Export stitched result as a single OME-TIFF file."""
+        if not self.output_path:
+            return
+
+        zarr_path = Path(self.output_path)
+        if self.is_multi_region and self.regions:
+            selected_region = self.region_combo.currentText()
+            zarr_path = zarr_path / f"{selected_region}.ome.zarr"
+
+        default_name = zarr_path.stem.replace(".ome", "") + ".ome.tif"
+        default_path = str(zarr_path.parent / default_name)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export OME-TIFF", default_path, "OME-TIFF (*.ome.tif);;All files (*.*)"
+        )
+        if not file_path:
+            return
+
+        try:
+            import tensorstore as ts
+            import numpy as np
+            import tifffile
+
+            scale0 = zarr_path / "scale0" / "image"
+            store = ts.open(
+                {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(scale0)}}
+            ).result()
+            shape = store.shape
+            self.log(f"Exporting {shape} to OME-TIFF (this may take a while)...")
+            QApplication.processEvents()
+
+            data = store.read().result()
+            data = np.asarray(data)
+
+            # tifffile expects TZCYX for OME-TIFF
+            # Current shape is (T, C, Z, Y, X) for 5D or (T, C, Y, X) for 4D
+            is_5d = len(shape) == 5
+            if is_5d:
+                # Rearrange from TCZYX to TZCYX
+                data = np.swapaxes(data, 1, 2)
+
+            tifffile.imwrite(
+                file_path,
+                data,
+                ome=True,
+                photometric="minisblack",
+            )
+            self.log(f"Exported to {file_path}")
+        except Exception as e:
+            self.log(f"Error exporting OME-TIFF: {e}")
+
+    def open_existing_in_napari(self):
+        """Open a previously stitched .ome.zarr folder in Napari."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select .ome.zarr folder", str(Path.home())
+        )
+        if not folder:
+            return
+
+        if not folder.endswith(".ome.zarr"):
+            self.log("Selected folder is not an .ome.zarr directory")
+            return
+
+        # Temporarily set output_path and open in Napari
+        old_output = self.output_path
+        old_multi = self.is_multi_region
+        self.output_path = folder
+        self.is_multi_region = False
+        self.open_in_napari()
+        self.output_path = old_output
+        self.is_multi_region = old_multi
 
 
 def main():

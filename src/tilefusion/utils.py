@@ -45,8 +45,9 @@ def compute_ssim(arr1, arr2, win_size: int) -> float:
     arr1_np = np.asarray(arr1)
     arr2_np = np.asarray(arr2)
     data_range = float(arr1_np.max() - arr1_np.min())
-    if data_range == 0:
-        data_range = 1.0
+    if data_range < 1e-3:
+        # Low-contrast / uniform region — SSIM is meaningless
+        return 0.0
     return float(_ssim_cpu(arr1_np, arr2_np, win_size=win_size, data_range=data_range))
 
 
@@ -69,7 +70,9 @@ def make_1d_profile(length: int, blend: int) -> np.ndarray:
     blend = min(blend, length // 2)
     prof = np.ones(length, dtype=np.float32)
     if blend > 0:
-        ramp = np.linspace(0, 1, blend, endpoint=False, dtype=np.float32)
+        # Cosine (Hann) window: zero-derivative at boundaries for smoother transitions
+        t = np.linspace(0, 1, blend, endpoint=False, dtype=np.float32)
+        ramp = np.float32(0.5) * (1 - np.cos(np.pi * t))
         prof[:blend] = ramp
         prof[-blend:] = ramp[::-1]
     return prof

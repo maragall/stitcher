@@ -4,6 +4,7 @@ Tile registration algorithms.
 Phase cross-correlation based registration with SSIM scoring.
 """
 
+import logging
 from typing import Any, Tuple, Union
 
 import numpy as np
@@ -19,6 +20,12 @@ from .utils import (
     xp,
     cp,
 )
+
+logger = logging.getLogger(__name__)
+
+# Shared phase correlation parameters — used in both parallel and sequential paths
+_OVERLAP_RATIO = 0.15  # Typical microscopy overlap is 10-25%
+_UPSAMPLE_FACTOR = 10  # 0.1-pixel subpixel accuracy
 
 
 def register_pair_worker(args: Tuple) -> Tuple:
@@ -51,12 +58,13 @@ def register_pair_worker(args: Tuple) -> Tuple:
         # Match histograms
         g2 = match_histograms(g2, g1)
 
-        # Phase cross-correlation
+        # Phase cross-correlation (unified parameters with sequential path)
         shift, _, _ = phase_cross_correlation(
             g1.astype(np.float32),
             g2.astype(np.float32),
             normalization="phase",
-            upsample_factor=10,
+            upsample_factor=_UPSAMPLE_FACTOR,
+            overlap_ratio=_OVERLAP_RATIO,
         )
 
         # Apply shift and compute SSIM
@@ -66,15 +74,20 @@ def register_pair_worker(args: Tuple) -> Tuple:
         # Scale shift back to original resolution
         dy_s, dx_s = int(np.round(shift[0] * df[0])), int(np.round(shift[1] * df[1]))
 
-        # Check thresholds
-        if th != 0.0 and ssim_val < th:
-            return (i_pos, j_pos, None, None, None)
+        # Reject shifts exceeding max_shift (likely spurious)
         if abs(dy_s) > max_shift[0] or abs(dx_s) > max_shift[1]:
+            logger.debug(
+                "Pair (%d, %d): shift (%d, %d) exceeds max_shift %s — rejected",
+                i_pos, j_pos, dy_s, dx_s, max_shift,
+            )
             return (i_pos, j_pos, None, None, None)
 
+        # Return SSIM as continuous score (used as weight in optimization)
+        # rather than applying a binary threshold gate
         return (i_pos, j_pos, dy_s, dx_s, round(ssim_val, 3))
 
-    except Exception:
+    except Exception as e:
+        logger.warning("Pair (%d, %d): registration exception — %s", i_pos, j_pos, e)
         return (i_pos, j_pos, None, None, None)
 
 
@@ -115,8 +128,8 @@ def register_and_score(
         arr2,
         disambiguate=True,
         normalization="phase",
-        upsample_factor=10,
-        overlap_ratio=0.5,
+        upsample_factor=_UPSAMPLE_FACTOR,
+        overlap_ratio=_OVERLAP_RATIO,
     )
     shift_apply = xp.asarray(shift, dtype=xp.float32)
     g2s = shift_array(arr2, shift_vec=shift_apply)

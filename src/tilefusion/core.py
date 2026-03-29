@@ -6,11 +6,14 @@ Main orchestration class that composes registration, fusion, optimization, and I
 
 import gc
 import json
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import tensorstore as ts
@@ -778,15 +781,13 @@ class TileFusion:
             try:
                 shift_ds, ssim_val = register_and_score(g1, g2, win_size=sw, debug=self._debug)
             except Exception as e:
-                if self._debug:
-                    print(f"Registration failed for ({i_pos}, {j_pos}): {e}")
+                logger.warning("Registration failed for (%d, %d): %s", i_pos, j_pos, e)
                 continue
 
             if shift_ds is None:
                 continue
             score = float(max(ssim_val, 1e-6))
-            if th != 0.0 and score < th:
-                continue
+            # SSIM is used as continuous weight in optimization, not binary gate
 
             dy_s, dx_s = [int(np.round(shift_ds[k] * df[k])) for k in range(2)]
 
