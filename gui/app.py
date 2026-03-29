@@ -1119,16 +1119,15 @@ class StitcherGUI(QMainWindow):
         # Subtle branding — logo + text
         brand_widget = QWidget()
         brand_layout = QHBoxLayout(brand_widget)
-        brand_layout.setContentsMargins(0, 0, 0, 4)
-        brand_layout.setSpacing(6)
+        brand_layout.setContentsMargins(0, 4, 0, 6)
+        brand_layout.setSpacing(5)
         brand_layout.addStretch()
 
-        # Small Cephla logo
         logo_path = Path(__file__).parent / "cephla_logo.svg"
         if logo_path.exists():
             logo_label = QLabel()
             renderer = QSvgRenderer(str(logo_path))
-            pm = QPixmap(14, 14)
+            pm = QPixmap(16, 16)
             pm.fill(Qt.transparent)
             p = QPainter(pm)
             renderer.render(p)
@@ -1138,8 +1137,7 @@ class StitcherGUI(QMainWindow):
 
         brand_text = QLabel("cephla")
         brand_text.setStyleSheet(
-            "color: rgba(49, 196, 243, 100); font-size: 10px; "
-            "letter-spacing: 3px;"
+            "color: #31c4f3; font-size: 10px; letter-spacing: 3px;"
         )
         brand_layout.addWidget(brand_text)
         brand_layout.addStretch()
