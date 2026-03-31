@@ -559,9 +559,14 @@ class TileFusion:
 
         # Apply flatfield correction if enabled
         if self._flatfield is not None:
-            region = apply_flatfield_region(
-                region, self._flatfield, self._darkfield, y_slice, x_slice
-            )
+            ff = self._flatfield
+            df = self._darkfield
+            # When reading a single channel for registration, slice the flatfield
+            if region.ndim == 3 and ff.shape[0] != region.shape[0]:
+                ch = self.channel_to_use if self.channel_to_use < ff.shape[0] else 0
+                ff = ff[ch : ch + 1]
+                df = df[ch : ch + 1] if df is not None else None
+            region = apply_flatfield_region(region, ff, df, y_slice, x_slice)
 
         return region
 
@@ -619,10 +624,19 @@ class TileFusion:
         # Use parallel processing for CPU mode with enough pairs
         use_parallel = parallel and not USING_GPU and len(pair_bounds) > 4
 
+        n_attempted = len(pair_bounds)
+
         if use_parallel:
             self._register_parallel(pair_bounds, df, sw, th, max_shift)
         else:
             self._register_sequential(pair_bounds, df, sw, th, max_shift)
+
+        n_success = len(self.pairwise_metrics)
+        n_failed = n_attempted - n_success
+        print(
+            f"Registration: {n_success}/{n_attempted} pairs succeeded"
+            + (f", {n_failed} failed" if n_failed else "")
+        )
 
     def _register_parallel(
         self,
@@ -671,7 +685,8 @@ class TileFusion:
                     j_pos, slice(bounds_j_y[0], bounds_j_y[1]), slice(bounds_j_x[0], bounds_j_x[1])
                 )
                 return (i_pos, j_pos, patch_i, patch_j)
-            except Exception:
+            except Exception as e:
+                logger.warning("I/O failed for pair (%d, %d): %s", i_pos, j_pos, e)
                 return (i_pos, j_pos, None, None)
 
         if needs_batching:

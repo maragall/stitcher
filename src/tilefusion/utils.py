@@ -53,7 +53,7 @@ def compute_ssim(arr1, arr2, win_size: int) -> float:
 
 def make_1d_profile(length: int, blend: int) -> np.ndarray:
     """
-    Create a linear ramp profile over `blend` pixels at each end.
+    Create a Hann (cosine) ramp profile over `blend` pixels at each end.
 
     Parameters
     ----------
@@ -65,7 +65,7 @@ def make_1d_profile(length: int, blend: int) -> np.ndarray:
     Returns
     -------
     prof : (length,) float32
-        Linear profile.
+        Cosine profile with zero-derivative at boundaries.
     """
     blend = min(blend, length // 2)
     prof = np.ones(length, dtype=np.float32)

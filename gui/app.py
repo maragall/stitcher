@@ -136,6 +136,8 @@ class PreviewWorker(QThread):
         registration_z=None,
         registration_t=0,
         registration_channel=0,
+        outlier_rel_thresh=0.5,
+        outlier_abs_thresh=2.0,
     ):
         super().__init__()
         self.tiff_path = tiff_path
@@ -147,6 +149,8 @@ class PreviewWorker(QThread):
         self.registration_z = registration_z
         self.registration_t = registration_t
         self.registration_channel = registration_channel
+        self.outlier_rel_thresh = outlier_rel_thresh
+        self.outlier_abs_thresh = outlier_abs_thresh
 
     def run(self):
         try:
@@ -400,34 +404,10 @@ class FusionWorker(QThread):
                 m.unlink()
 
             step_start = time.time()
-
-            # Auto-compute blend_pixels from tile overlap if requested
-            blend_pixels = self.blend_pixels
-            if blend_pixels is None:
-                # Create a temporary TileFusion to detect overlap
-                from tilefusion.registration import find_adjacent_pairs
-                tf_temp = TileFusion(self.tiff_path)
-                pairs = find_adjacent_pairs(
-                    tf_temp._tile_positions, tf_temp._pixel_size, (tf_temp.Y, tf_temp.X)
-                )
-                if pairs:
-                    import numpy as np
-                    # Use median overlap across all pairs, take half as blend width
-                    overlaps_y = [p[4] for p in pairs if p[4] > 0]
-                    overlaps_x = [p[5] for p in pairs if p[5] > 0]
-                    median_overlap_y = int(np.median(overlaps_y)) if overlaps_y else 50
-                    median_overlap_x = int(np.median(overlaps_x)) if overlaps_x else 50
-                    blend_pixels = (max(median_overlap_y // 2, 10), max(median_overlap_x // 2, 10))
-                    self.progress.emit(f"Auto blend width: {blend_pixels[0]}px (Y), {blend_pixels[1]}px (X)")
-                else:
-                    blend_pixels = (50, 50)
-                    self.progress.emit("No adjacent pairs detected — using default 50px blend")
-                del tf_temp
-
             tf = TileFusion(
                 self.tiff_path,
                 output_path=output_path,
-                blend_pixels=blend_pixels,
+                blend_pixels=self.blend_pixels or (50, 50),
                 downsample_factors=(self.downsample_factor, self.downsample_factor),
                 flatfield=self.flatfield,
                 darkfield=self.darkfield,
@@ -437,6 +417,25 @@ class FusionWorker(QThread):
             )
             load_time = time.time() - step_start
             self.progress.emit(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each) [{load_time:.1f}s]")
+
+            # Auto-compute blend_pixels from tile overlap if requested
+            if self.blend_pixels is None:
+                from tilefusion.registration import find_adjacent_pairs
+                import numpy as np
+                pairs = find_adjacent_pairs(
+                    tf._tile_positions, tf._pixel_size, (tf.Y, tf.X)
+                )
+                if pairs:
+                    overlaps_y = [p[4] for p in pairs if p[4] > 0]
+                    overlaps_x = [p[5] for p in pairs if p[5] > 0]
+                    median_overlap_y = int(np.median(overlaps_y)) if overlaps_y else 50
+                    median_overlap_x = int(np.median(overlaps_x)) if overlaps_x else 50
+                    blend_pixels = (max(median_overlap_y // 2, 10), max(median_overlap_x // 2, 10))
+                    tf.blend_pixels = blend_pixels
+                    self.progress.emit(f"Auto blend width: {blend_pixels[0]}px (Y), {blend_pixels[1]}px (X)")
+                else:
+                    tf.blend_pixels = (50, 50)
+                    self.progress.emit("No adjacent pairs detected — using default 50px blend")
 
             # Check for multi-region dataset
             if len(tf._unique_regions) > 1:
@@ -549,16 +548,15 @@ class DropArea(QFrame):
         layout.setSpacing(4)
         layout.setContentsMargins(12, 12, 12, 12)
 
-        self.icon_label = QLabel("📂")
-        self.icon_label.setAlignment(Qt.AlignCenter)
-        self.icon_label.setStyleSheet("font-size: 28px; border: none; background: transparent;")
-        layout.addWidget(self.icon_label)
+        layout.addStretch()
 
         self.label = QLabel("Drop OME-TIFF or SQUID folder here\nor click to browse")
         self.label.setAlignment(Qt.AlignCenter)
         self.label.setWordWrap(True)
         self.label.setStyleSheet("border: none; background: transparent;")
         layout.addWidget(self.label)
+
+        layout.addStretch()
 
         self.file_path = None
 
@@ -612,11 +610,7 @@ class DropArea(QFrame):
         self.file_path = file_path
         path = Path(file_path)
         self.setStyleSheet(self._active_style)
-        self.icon_label.setText("✅")
-        if path.is_dir():
-            self.label.setText(f"📁 {path.name}")
-        else:
-            self.label.setText(path.name)
+        self.label.setText(path.name)
 
 
 class FlatfieldDropArea(QFrame):
@@ -636,10 +630,6 @@ class FlatfieldDropArea(QFrame):
 
         layout = QHBoxLayout(self)
         layout.setSpacing(8)
-
-        self.icon_label = QLabel("📄")
-        self.icon_label.setStyleSheet("font-size: 20px; border: none; background: transparent;")
-        layout.addWidget(self.icon_label)
 
         self.label = QLabel("Drop flatfield .npy here or click to browse")
         self.label.setStyleSheet("border: none; background: transparent;")
@@ -683,13 +673,11 @@ class FlatfieldDropArea(QFrame):
         self.file_path = file_path
         path = Path(file_path)
         self.setStyleSheet(self._active_style)
-        self.icon_label.setText("✅")
         self.label.setText(path.name)
 
     def clear(self):
         self.file_path = None
         self.setStyleSheet(self._default_style)
-        self.icon_label.setText("📄")
         self.label.setText("Drop flatfield .npy here or click to browse")
 
 
@@ -817,7 +805,7 @@ class StitcherGUI(QMainWindow):
 
         preview_layout.addStretch()
 
-        self.preview_button = QPushButton("👁 Preview")
+        self.preview_button = QPushButton("Preview")
         self.preview_button.setObjectName("previewButton")
         self.preview_button.setCursor(Qt.PointingHandCursor)
         self.preview_button.clicked.connect(self.run_preview)
@@ -936,13 +924,13 @@ class StitcherGUI(QMainWindow):
         settings_layout.setSpacing(8)
 
         self.registration_checkbox = QCheckBox("Enable registration refinement")
-        self.registration_checkbox.setChecked(False)
+        self.registration_checkbox.setChecked(True)
         self.registration_checkbox.toggled.connect(self.on_registration_toggled)
         settings_layout.addWidget(self.registration_checkbox)
 
         # Downsample factor (shown when registration enabled)
         self.downsample_widget = QWidget()
-        self.downsample_widget.setVisible(False)
+        self.downsample_widget.setVisible(True)
         downsample_layout = QHBoxLayout(self.downsample_widget)
         downsample_layout.setContentsMargins(20, 0, 0, 0)
         downsample_layout.addWidget(QLabel("Downsample:"))
@@ -1040,7 +1028,7 @@ class StitcherGUI(QMainWindow):
         layout.addWidget(settings_group)
 
         # Run button
-        self.run_button = QPushButton("▶ Run Stitching")
+        self.run_button = QPushButton("Run Stitching")
         self.run_button.setObjectName("runButton")
         self.run_button.setMinimumHeight(40)
         self.run_button.setCursor(Qt.PointingHandCursor)
@@ -1081,7 +1069,11 @@ class StitcherGUI(QMainWindow):
         layout.addWidget(self.region_widget)
 
         # Open in Napari button
-        self.napari_button = QPushButton("🔬 Open in Napari")
+        self.napari_button = QPushButton("Open in Napari")
+        self.napari_button.setToolTip(
+            "Result saved as OME-Zarr (faster for large datasets).\n"
+            "Use 'Export OME-TIFF' if your downstream tool requires it."
+        )
         self.napari_button.setObjectName("napariButton")
         self.napari_button.setMinimumHeight(40)
         self.napari_button.setCursor(Qt.PointingHandCursor)
@@ -1101,7 +1093,10 @@ class StitcherGUI(QMainWindow):
 
         self.export_tiff_button = QPushButton("Export OME-TIFF")
         self.export_tiff_button.setCursor(Qt.PointingHandCursor)
-        self.export_tiff_button.setToolTip("Export stitched result as a single OME-TIFF file")
+        self.export_tiff_button.setToolTip(
+            "Export as OME-TIFF for tools that require it.\n"
+            "OME-Zarr (default output) is faster for large datasets."
+        )
         self.export_tiff_button.clicked.connect(self.export_ome_tiff)
         self.export_tiff_button.setEnabled(False)
         actions_layout.addWidget(self.export_tiff_button)
@@ -1164,6 +1159,12 @@ class StitcherGUI(QMainWindow):
         self.run_button.setEnabled(True)
         self.preview_button.setEnabled(True)
         self.calc_flatfield_button.setEnabled(True)
+
+        # Re-assert quality defaults on every new dataset load
+        self.blend_checkbox.setChecked(True)
+        self.blend_auto_checkbox.setChecked(True)
+        self.registration_checkbox.setChecked(True)
+
         # Clear previous flatfield when new file is selected
         self.flatfield = None
         self.darkfield = None
@@ -1505,8 +1506,29 @@ class StitcherGUI(QMainWindow):
         self.log_text.append(message)
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
 
+    def _flatfield_in_progress(self):
+        """Check if flatfield calculation is still running."""
+        return (
+            self.flatfield_worker is not None
+            and self.flatfield_worker.isRunning()
+        )
+
     def run_stitching(self):
         if not self.drop_area.file_path:
+            return
+
+        if self._flatfield_in_progress():
+            self.log("Waiting for flatfield calculation to finish...")
+            self.run_button.setEnabled(False)
+            self.preview_button.setEnabled(False)
+            # One-shot connection — disconnect after firing to prevent stacking
+            def _on_ready(*_args):
+                try:
+                    self.flatfield_worker.finished.disconnect(_on_ready)
+                except TypeError:
+                    pass
+                self.run_stitching()
+            self.flatfield_worker.finished.connect(_on_ready)
             return
 
         self.run_button.setEnabled(False)
@@ -1588,26 +1610,32 @@ class StitcherGUI(QMainWindow):
         seconds = elapsed_time % 60
         time_str = f"{minutes}m {seconds:.1f}s" if minutes > 0 else f"{seconds:.1f}s"
 
-        self.log(f"\n✓ Fusion complete! Time: {time_str}\nOutput: {output_path}")
+        self.log(f"\nFusion complete! Time: {time_str}\nOutput: {output_path}")
+        self.log("Note: Result saved as OME-Zarr (faster for large datasets). "
+                 "Use 'Export OME-TIFF' if your downstream tool requires it.")
 
-        # Prompt user to open result in Napari
-        reply = QMessageBox.question(
-            self,
-            "Stitching Complete",
-            "Opening result in Napari. Continue?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-        if reply == QMessageBox.Yes:
-            self.open_in_napari()
+        self.open_in_napari()
 
     def on_fusion_error(self, error_msg):
         self.progress_bar.setVisible(False)
         self.run_button.setEnabled(True)
-        self.log(f"\n✗ {error_msg}")
+        self.log(f"\nError: {error_msg}")
 
     def run_preview(self):
         if not self.drop_area.file_path:
+            return
+
+        if self._flatfield_in_progress():
+            self.log("Waiting for flatfield calculation to finish...")
+            self.run_button.setEnabled(False)
+            self.preview_button.setEnabled(False)
+            def _on_ready(*_args):
+                try:
+                    self.flatfield_worker.finished.disconnect(_on_ready)
+                except TypeError:
+                    pass
+                self.run_preview()
+            self.flatfield_worker.finished.connect(_on_ready)
             return
 
         self.preview_button.setEnabled(False)
@@ -1637,6 +1665,8 @@ class StitcherGUI(QMainWindow):
             registration_z=registration_z,
             registration_t=registration_t,
             registration_channel=registration_channel,
+            outlier_rel_thresh=self.outlier_rel_spin.value() / 100.0,
+            outlier_abs_thresh=float(self.outlier_abs_spin.value()),
         )
         self.preview_worker.progress.connect(self.log)
         self.preview_worker.finished.connect(self.on_preview_finished)
@@ -1668,7 +1698,7 @@ class StitcherGUI(QMainWindow):
         self.progress_bar.setVisible(False)
         self.preview_button.setEnabled(True)
         self.run_button.setEnabled(True)
-        self.log(f"\n✗ {error_msg}")
+        self.log(f"\nError: {error_msg}")
 
     def _on_region_combo_changed(self, index):
         """Sync slider when dropdown changes."""

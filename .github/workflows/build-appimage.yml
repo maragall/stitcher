@@ -1,0 +1,78 @@
+name: Build Linux AppImage
+
+on:
+  push:
+    branches: [main, user-feedback-fixes]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 \
+            libxcb-xfixes0 libxcb-shape0 libegl1 libgl1-mesa-dev libglib2.0-0 wget \
+            fuse libfuse2
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[gui,flatfield]" pyinstaller
+
+      - name: Pre-build smoke test
+        run: python installer/smoke_test.py
+
+      - name: Build with PyInstaller
+        working-directory: installer
+        run: python -m PyInstaller stitcher_linux.spec --noconfirm --distpath ../dist --workpath ../build --clean
+
+      - name: Post-build smoke test
+        continue-on-error: true
+        run: xvfb-run --auto-servernum dist/stitcher-gui/stitcher-gui --smoke-test
+
+      - name: Assemble AppImage
+        run: |
+          APP_DIR=CephlaStitcher.AppDir
+          mkdir -p $APP_DIR/usr
+
+          cp -r dist/stitcher-gui/* $APP_DIR/usr/
+
+          cp installer/stitcher.desktop $APP_DIR/
+          cp gui/cephla_logo.svg $APP_DIR/stitcher.svg
+          cp gui/cephla_logo.svg $APP_DIR/.DirIcon
+
+          ln -sf usr/stitcher-gui $APP_DIR/AppRun
+
+          wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x appimagetool-x86_64.AppImage
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run $APP_DIR CephlaStitcher-x86_64.AppImage
+
+      - name: Stage artifact
+        run: |
+          mkdir -p artifact
+          cp CephlaStitcher-x86_64.AppImage artifact/
+          cp README.md artifact/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stitcher-linux-appimage
+          path: artifact/
