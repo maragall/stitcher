@@ -41,12 +41,10 @@ jobs:
 
       - name: Stage artifact
         run: |
-          mkdir artifact
-          xcopy dist\stitcher-gui artifact\stitcher-gui\ /E /I /Q
-          copy README.md artifact\
+          copy README.md dist\stitcher-gui\
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: stitcher-windows
-          path: artifact/
+          path: dist/stitcher-gui/
