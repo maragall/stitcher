@@ -2138,24 +2138,74 @@ class StitcherGUI(QMainWindow):
             QApplication.processEvents()
 
             is_5d = len(shape) == 5
+            n_t = shape[0]
+            n_c = shape[1]
+            n_z = shape[2] if is_5d else 1
+            h = shape[-2]
+            w = shape[-1]
+            dtype = np.dtype(store.dtype.numpy_dtype)
 
-            # Write chunked: one T/Z plane at a time to avoid OOM
-            with tifffile.TiffWriter(file_path, ome=True, bigtiff=est_gb > 2) as tw:
-                n_t = shape[0]
-                n_c = shape[1]
-                n_z = shape[2] if is_5d else 1
-                for t in range(n_t):
-                    for z in range(n_z):
-                        for c in range(n_c):
-                            if is_5d:
-                                plane = np.asarray(store[t, c, z, :, :].read().result())
-                            else:
-                                plane = np.asarray(store[t, c, :, :].read().result())
-                            tw.write(
-                                plane,
-                                photometric="minisblack",
-                                metadata={"axes": "YX"} if t == 0 and z == 0 and c == 0 else None,
-                            )
+            # Gather OME metadata from the source dataset
+            ome_metadata = {}
+            try:
+                from tilefusion import TileFusion
+                import json as _json
+                if self.drop_area.file_path:
+                    tf_meta = TileFusion(self.drop_area.file_path)
+                    px = tf_meta._pixel_size[0]
+                    ome_metadata["PhysicalSizeX"] = px
+                    ome_metadata["PhysicalSizeXUnit"] = "\u00b5m"
+                    ome_metadata["PhysicalSizeY"] = px
+                    ome_metadata["PhysicalSizeYUnit"] = "\u00b5m"
+                    if "channel_names" in tf_meta._metadata:
+                        ome_metadata["Channel"] = {
+                            "Name": tf_meta._metadata["channel_names"]
+                        }
+                    acq_path = Path(self.drop_area.file_path) / "acquisition parameters.json"
+                    if acq_path.exists():
+                        with open(acq_path) as f:
+                            acq = _json.load(f)
+                        dz = acq.get("dz(um)")
+                        if dz and is_5d:
+                            ome_metadata["PhysicalSizeZ"] = dz
+                            ome_metadata["PhysicalSizeZUnit"] = "\u00b5m"
+            except Exception:
+                pass
+
+            # Write via disk-backed memmap to avoid OOM
+            import tempfile as _tmp
+            tzcyx_shape = (n_t, n_z, n_c, h, w)
+            tmp_path = _tmp.mktemp(suffix=".dat")
+            mmap = np.memmap(tmp_path, dtype=dtype, mode="w+", shape=tzcyx_shape)
+
+            total_planes = n_t * n_z * n_c
+            done = 0
+            for t in range(n_t):
+                for z in range(n_z):
+                    for c in range(n_c):
+                        if is_5d:
+                            mmap[t, z, c] = np.asarray(store[t, c, z, :, :].read().result())
+                        else:
+                            mmap[t, 0, c] = np.asarray(store[t, c, :, :].read().result())
+                        done += 1
+                        if done % max(1, total_planes // 10) == 0:
+                            self.log(f"Reading: {done}/{total_planes} planes")
+                            QApplication.processEvents()
+            mmap.flush()
+
+            self.log("Writing OME-TIFF...")
+            QApplication.processEvents()
+            tifffile.imwrite(
+                file_path,
+                mmap,
+                ome=True,
+                bigtiff=est_gb > 2,
+                photometric="minisblack",
+                metadata=ome_metadata,
+            )
+            del mmap
+            import os as _os
+            _os.unlink(tmp_path)
             self.log(f"Exported to {file_path}")
         except Exception as e:
             self.log(f"Error exporting OME-TIFF: {e}")
