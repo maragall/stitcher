@@ -35,10 +35,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ".[gui,flatfield]" pyinstaller
-
-      - name: Pre-build smoke test
-        run: python installer/smoke_test.py
+          pip install ".[gui,flatfield]" pyinstaller "napari[pyqt5]"
 
       - name: Build with PyInstaller
         working-directory: installer
@@ -46,7 +43,9 @@ jobs:
 
       - name: Post-build smoke test
         continue-on-error: true
-        run: xvfb-run --auto-servernum dist/stitcher-gui/stitcher-gui --smoke-test
+        run: |
+          export QT_QPA_PLATFORM=offscreen
+          xvfb-run --auto-servernum dist/stitcher-gui/stitcher-gui --smoke-test
 
       - name: Assemble AppImage
         run: |

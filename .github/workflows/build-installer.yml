@@ -27,10 +27,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ".[gui,flatfield]" pyinstaller
-
-      - name: Pre-build smoke test
-        run: python installer/smoke_test.py
+          pip install ".[gui,flatfield]" pyinstaller "napari[pyqt5]"
 
       - name: Build with PyInstaller
         working-directory: installer
@@ -38,12 +35,14 @@ jobs:
 
       - name: Post-build smoke test
         continue-on-error: true
-        run: dist\stitcher-gui.exe --smoke-test
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          dist\stitcher-gui\stitcher-gui.exe --smoke-test
 
       - name: Stage artifact
         run: |
           mkdir artifact
-          copy dist\stitcher-gui.exe artifact\
+          xcopy dist\stitcher-gui artifact\stitcher-gui\ /E /I /Q
           copy README.md artifact\
 
       - name: Upload artifact

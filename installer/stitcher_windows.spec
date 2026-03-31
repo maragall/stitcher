@@ -1,90 +1,79 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for Cephla Stitcher — Windows single-exe build.
+"""PyInstaller spec file for TileFusion Stitcher (Windows).
 
-Run from the installer/ directory:
+IMPORTANT: Run from the installer/ directory:
   cd installer && python -m PyInstaller stitcher_windows.spec --noconfirm
 """
 
 import os
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+import glob as _glob
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
 block_cipher = None
 
-# Collect all submodules so PyInstaller bundles entire packages
-tilefusion_imports = collect_submodules("tilefusion")
-napari_imports = collect_submodules("napari")
-skimage_imports = collect_submodules("skimage")
+tilefusion_imports = collect_submodules('tilefusion')
+skimage_imports = collect_submodules('skimage')
 
-# Collect data files needed at runtime
-napari_datas = collect_data_files("napari")
+# sklearn DLLs: sklearn bundles msvcp140.dll in .libs/
+sklearn_binaries = []
+try:
+    import sklearn
+    _sklearn_libs = os.path.join(os.path.dirname(sklearn.__file__), '.libs')
+    if os.path.isdir(_sklearn_libs):
+        for dll in _glob.glob(os.path.join(_sklearn_libs, '*.dll')):
+            sklearn_binaries.append((dll, '.'))
+except ImportError:
+    pass
+
+napari_metadata = copy_metadata('imageio') + copy_metadata('napari') + copy_metadata('scikit-learn')
+try:
+    napari_metadata += copy_metadata('napari-svg')
+except Exception:
+    pass
 
 a = Analysis(
-    ["entry.py"],
-    pathex=[os.path.join("..", "src"), os.path.abspath("..")],
-    binaries=[],
-    datas=napari_datas + [
-        (os.path.join("..", "gui", "cephla_logo.svg"), "gui"),
+    ['entry.py'],
+    pathex=[os.path.abspath('..')],
+    binaries=sklearn_binaries,
+    datas=napari_metadata + [
+        (os.path.join('..', 'gui', 'cephla_logo.svg'), 'gui'),
     ],
-    hiddenimports=tilefusion_imports + napari_imports + skimage_imports + [
-        "gui",
-        "gui.app",
-        "installer",
-        "installer.smoke_test",
-        "scripts",
-        "scripts.view_in_napari",
-        "scripts.convert_to_zarr",
-        "PyQt5",
-        "PyQt5.QtWidgets",
-        "PyQt5.QtCore",
-        "PyQt5.QtGui",
-        "PyQt5.QtSvg",
-        "numpy",
-        "numpy.core._methods",
-        "numpy.lib.format",
-        "scipy",
-        "scipy.ndimage",
-        "scipy.optimize",
-        "scipy.signal",
-        "numba",
-        "numba.core",
-        "pandas",
-        "tifffile",
-        "tensorstore",
-        "psutil",
-        "tqdm",
-        "PIL",
-        "ome_zarr",
-        "zarr",
-        "zarr.storage",
-        "dask",
-        "dask.array",
-        "vispy",
-        "vispy.app",
-        "vispy.app.backends._pyqt5",
-        "OpenGL",
-        "OpenGL.GL",
-        "OpenGL.platform.win32",
-        "xml.etree.ElementTree",
-        "importlib.metadata",
+    hiddenimports=tilefusion_imports + skimage_imports + [
+        'numpy', 'numpy.core._methods', 'numpy.lib.format',
+        'scipy', 'scipy.ndimage', 'scipy.optimize', 'scipy.sparse',
+        'tifffile', 'tensorstore', 'ml_dtypes',
+        'numba', 'numba.core',
+        'basicpy', 'basicpy.basicpy', 'basicpy.metrics', 'basicpy._jax_routines',
+        'hyperactive', 'gradient_free_optimizers',
+        'sklearn', 'sklearn.ensemble',
+        'pandas', 'tqdm', 'psutil',
+        'qtpy', 'qtpy.QtCore', 'qtpy.QtGui', 'qtpy.QtWidgets',
+        'PyQt5', 'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets', 'PyQt5.QtSvg',
+        'gui', 'gui.app',
+        'installer', 'installer.smoke_test',
+        'xml.etree.ElementTree', 'json', 'gc', 'shutil', 'importlib.metadata',
+        'matplotlib', 'matplotlib.pyplot', 'matplotlib.backends.backend_agg',
     ],
-    excludes=["tkinter", "matplotlib", "IPython", "pytest"],
+    hookspath=['hooks'],
+    excludes=['tkinter', 'IPython', 'pytest', 'cupy', 'cupyx', 'cucim'],
     noarchive=False,
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name="stitcher-gui",
+    pyz, a.scripts, [],
+    exclude_binaries=True,
+    name='stitcher-gui',
     debug=False,
-    bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,
-    icon=None,
+    console=True,
+)
+
+coll = COLLECT(
+    exe, a.binaries, a.zipfiles, a.datas,
+    strip=False,
+    upx=True,
+    name='stitcher-gui',
 )
