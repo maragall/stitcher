@@ -245,30 +245,41 @@ def read_ome_tiff_tiles_tile(
     """
     tile_id = tile_identifiers[tile_idx]
     file_path = _get_tile_file(ome_tiff_folder, tile_id, tile_file_map)
-
-    data = tifffile.imread(file_path)
     axes = axes.upper()
 
-    # Extract the correct slice based on axes
-    if axes == "CYX":
-        return data  # Already (C, Y, X)
-    elif axes == "ZCYX":
-        return data[z_level]  # (Z, C, Y, X) -> (C, Y, X)
-    elif axes == "TCYX":
-        return data[time_idx]  # (T, C, Y, X) -> (C, Y, X)
-    elif axes == "TZCYX":
-        return data[time_idx, z_level]  # (T, Z, C, Y, X) -> (C, Y, X)
-    elif axes == "YX":
-        return data[np.newaxis, ...]  # (Y, X) -> (1, Y, X)
-    else:
-        # Fallback: assume last 3 dims are C, Y, X
-        if data.ndim == 3:
+    # Read only the needed z/t slice to avoid OOM on large z-stacks
+    with tifffile.TiffFile(file_path) as tif:
+        series = tif.series[0]
+        shape = series.shape
+        sa = (series.axes.upper() if hasattr(series, "axes") else axes) or axes
+
+        if sa == "YX" or len(shape) == 2:
+            return tifffile.imread(file_path)[np.newaxis, ...]
+        elif sa == "CYX" or len(shape) == 3:
+            return tifffile.imread(file_path)
+        elif sa == "ZCYX" and len(shape) == 4:
+            n_c = shape[1]
+            pages = [tif.pages[z_level * n_c + c].asarray() for c in range(n_c)]
+            return np.stack(pages)
+        elif sa == "TCYX" and len(shape) == 4:
+            n_c = shape[1]
+            pages = [tif.pages[time_idx * n_c + c].asarray() for c in range(n_c)]
+            return np.stack(pages)
+        elif sa == "TZCYX" and len(shape) == 5:
+            n_z, n_c = shape[1], shape[2]
+            base = time_idx * n_z * n_c + z_level * n_c
+            pages = [tif.pages[base + c].asarray() for c in range(n_c)]
+            return np.stack(pages)
+        else:
+            # Fallback: read full and slice
+            data = tifffile.imread(file_path)
+            if data.ndim == 3:
+                return data
+            elif data.ndim == 4:
+                return data[z_level]
+            elif data.ndim == 5:
+                return data[time_idx, z_level]
             return data
-        elif data.ndim == 4:
-            return data[z_level]
-        elif data.ndim == 5:
-            return data[time_idx, z_level]
-        return data
 
 
 def read_ome_tiff_tiles_region(

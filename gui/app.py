@@ -697,7 +697,8 @@ class FlatfieldWorker(QThread):
     def run(self):
         try:
             import numpy as np
-            from tilefusion import TileFusion, calculate_flatfield, HAS_BASICPY
+            from basicpy import BaSiC
+            from tilefusion import TileFusion, HAS_BASICPY
 
             if not HAS_BASICPY:
                 self.error.emit("BaSiCPy is not installed. Install with: pip install basicpy")
@@ -710,30 +711,49 @@ class FlatfieldWorker(QThread):
             # must be performed on raw, uncorrected tiles.
             tf = TileFusion(self.file_path)
 
-            # Determine how many tiles to sample
             n_tiles = tf.n_tiles
+            n_channels = tf.channels
             n_samples = min(self.n_samples, n_tiles)
 
-            self.progress.emit(f"Sampling {n_samples} tiles from {n_tiles} total...")
-
-            # Random sample of tile indices
             rng = np.random.default_rng(42)
-            sample_indices = rng.choice(n_tiles, size=n_samples, replace=False)
-            sample_indices = sorted(sample_indices)
+            sample_indices = sorted(rng.choice(n_tiles, size=n_samples, replace=False))
 
-            # Read sampled tiles
-            # NOTE: Using private method tf._read_tile intentionally.
-            # FlatfieldWorker needs direct access to raw tile data for sampling.
-            tiles = []
-            for i, tile_idx in enumerate(sample_indices):
-                self.progress.emit(f"Reading tile {i+1}/{n_samples}...")
-                tile = tf._read_tile(tile_idx)
-                tiles.append(tile)
-
-            self.progress.emit("Calculating flatfield with BaSiCPy...")
-            flatfield, darkfield = calculate_flatfield(
-                tiles, use_darkfield=self.use_darkfield, constant_darkfield=True
+            self.progress.emit(
+                f"Computing flatfield: {n_samples} tiles, {n_channels} channels..."
             )
+
+            # Process per-channel to avoid OOM on large multi-channel z-stacks.
+            # Only one channel's worth of tiles is in memory at a time.
+            tile_shape = (tf.Y, tf.X)
+            flatfield = np.zeros((n_channels,) + tile_shape, dtype=np.float32)
+            darkfield = (
+                np.zeros((n_channels,) + tile_shape, dtype=np.float32)
+                if self.use_darkfield
+                else None
+            )
+
+            for ch in range(n_channels):
+                self.progress.emit(f"Channel {ch + 1}/{n_channels}: reading tiles...")
+                # Load only this channel per tile to minimize memory.
+                # _read_tile_region reads one z-level; we index the channel.
+                images = np.empty((n_samples,) + tile_shape, dtype=np.float32)
+                for i, tile_idx in enumerate(sample_indices):
+                    tile = tf._read_tile(tile_idx)  # (C, Y, X), one z-level
+                    images[i] = tile[ch if ch < tile.shape[0] else 0]
+                    del tile
+
+                self.progress.emit(f"Channel {ch + 1}/{n_channels}: fitting BaSiCPy...")
+
+                self.progress.emit(f"Channel {ch + 1}/{n_channels}: fitting BaSiCPy...")
+                basic = BaSiC(get_darkfield=self.use_darkfield, smoothness_flatfield=1.0)
+                basic.fit(images)
+                flatfield[ch] = basic.flatfield.astype(np.float32)
+
+                if self.use_darkfield:
+                    df_value = np.median(basic.darkfield)
+                    darkfield[ch] = np.full(tile_shape, df_value, dtype=np.float32)
+
+                del images
 
             self.progress.emit("Flatfield calculation complete!")
             self.finished.emit(flatfield, darkfield)
