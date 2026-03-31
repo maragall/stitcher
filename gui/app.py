@@ -1953,12 +1953,24 @@ class StitcherGUI(QMainWindow):
             has_zt_dims = is_5d and (n_z > 1 or shape[0] > 1)  # shape[0] is T
 
             if has_zt_dims:
-                # Load full 5D data for z/t sliders (use only scale0 for memory)
-                store = pyramid_data[0]
-                self.log(f"Loading full volume: T={shape[0]}, C={n_channels}, Z={n_z}")
+                # Use a downsampled level to avoid OOM on large z-stacks.
+                # Prefer scale2 (4x downsample) if available, else lowest available.
+                ds_idx = min(2, len(pyramid_data) - 1)
+                store = pyramid_data[ds_idx]
+                ds_shape = store.shape
+                ds_label = f"scale{ds_idx}" if ds_idx > 0 else "full resolution"
+                self.log(
+                    f"Loading volume ({ds_label}): T={ds_shape[0]}, C={ds_shape[1]}, "
+                    f"Z={ds_shape[2]}, {ds_shape[3]}x{ds_shape[4]}"
+                )
+                est_gb = ds_shape[0] * ds_shape[2] * ds_shape[3] * ds_shape[4] * 2 / 1e9
+                if est_gb * n_channels > 12:
+                    self.log(
+                        f"Warning: estimated {est_gb * n_channels:.1f} GB needed. "
+                        "May exceed available RAM."
+                    )
 
                 for c in range(n_channels):
-                    # Read full t, z for this channel: (T, Z, Y, X)
                     data = store[:, c, :, :, :].read().result()
                     data = np.asarray(data)
 
@@ -2065,21 +2077,28 @@ class StitcherGUI(QMainWindow):
                 self.log("Dataset is 2D — max projection not applicable")
                 return
 
-            self.log(f"Computing max intensity projection (Z={shape[2]} planes)...")
+            n_z = shape[2]
+            self.log(f"Computing max intensity projection (Z={n_z} planes)...")
             viewer = napari.Viewer()
             n_channels = shape[1]
 
             channel_colors = ["blue", "green", "yellow", "red", "magenta", "cyan"]
             for c in range(n_channels):
-                # Read all Z for t=0, this channel
-                vol = store[0, c, :, :, :].read().result()
-                mip = np.max(np.asarray(vol), axis=0)
+                # Compute MIP one z-plane at a time to avoid OOM
+                mip = None
+                for z in range(n_z):
+                    plane = np.asarray(store[0, c, z, :, :].read().result())
+                    if mip is None:
+                        mip = plane.copy()
+                    else:
+                        np.maximum(mip, plane, out=mip)
                 viewer.add_image(
                     mip,
                     name=f"MIP Ch{c}",
                     colormap=channel_colors[c % len(channel_colors)],
                     blending="additive",
                 )
+                del mip
             napari.run()
         except Exception as e:
             self.log(f"Error computing MIP: {e}")
@@ -2112,25 +2131,31 @@ class StitcherGUI(QMainWindow):
                 {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(scale0)}}
             ).result()
             shape = store.shape
-            self.log(f"Exporting {shape} to OME-TIFF (this may take a while)...")
+            est_gb = np.prod(shape) * np.dtype(store.dtype.numpy_dtype).itemsize / 1e9
+            self.log(f"Exporting {shape} to OME-TIFF ({est_gb:.1f} GB)...")
+            if est_gb > 4:
+                self.log(f"Warning: large export ({est_gb:.1f} GB) — this may take a while")
             QApplication.processEvents()
 
-            data = store.read().result()
-            data = np.asarray(data)
-
-            # tifffile expects TZCYX for OME-TIFF
-            # Current shape is (T, C, Z, Y, X) for 5D or (T, C, Y, X) for 4D
             is_5d = len(shape) == 5
-            if is_5d:
-                # Rearrange from TCZYX to TZCYX
-                data = np.swapaxes(data, 1, 2)
 
-            tifffile.imwrite(
-                file_path,
-                data,
-                ome=True,
-                photometric="minisblack",
-            )
+            # Write chunked: one T/Z plane at a time to avoid OOM
+            with tifffile.TiffWriter(file_path, ome=True, bigtiff=est_gb > 2) as tw:
+                n_t = shape[0]
+                n_c = shape[1]
+                n_z = shape[2] if is_5d else 1
+                for t in range(n_t):
+                    for z in range(n_z):
+                        for c in range(n_c):
+                            if is_5d:
+                                plane = np.asarray(store[t, c, z, :, :].read().result())
+                            else:
+                                plane = np.asarray(store[t, c, :, :].read().result())
+                            tw.write(
+                                plane,
+                                photometric="minisblack",
+                                metadata={"axes": "YX"} if t == 0 and z == 0 and c == 0 else None,
+                            )
             self.log(f"Exported to {file_path}")
         except Exception as e:
             self.log(f"Error exporting OME-TIFF: {e}")
