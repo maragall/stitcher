@@ -334,6 +334,26 @@ class PreviewWorker(QThread):
             self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
 
 
+class _TqdmSignalRedirect:
+    """Redirect tqdm output to a Qt signal, updating the last log line in-place."""
+
+    update_last_line = pyqtSignal(str)
+
+    def __init__(self, signal):
+        self._signal = signal
+        self._last_text = ""
+
+    def write(self, s):
+        s = s.strip()
+        if s and s != self._last_text:
+            self._last_text = s
+            # Emit with special prefix so log() can update in-place
+            self._signal.emit(f"\x00PROGRESS:{s}")
+
+    def flush(self):
+        pass
+
+
 class FusionWorker(QThread):
     """Worker thread for running tile fusion."""
 
@@ -370,6 +390,59 @@ class FusionWorker(QThread):
         self.outlier_rel_thresh = outlier_rel_thresh
         self.outlier_abs_thresh = outlier_abs_thresh
         self.output_path = None
+
+    def _stdout_context(self):
+        """Context manager that redirects meaningful print() to the progress signal."""
+        import sys
+
+        signal = self.progress
+        orig = sys.stdout
+
+        class _Redirect:
+            def write(self, s):
+                s = s.strip()
+                # Skip decorative lines and empty output
+                if not s or s.startswith("=") or s.startswith("-"):
+                    return
+                signal.emit(s)
+
+            def flush(self):
+                pass
+
+        class _Ctx:
+            def __enter__(ctx):
+                sys.stdout = _Redirect()
+                return ctx
+
+            def __exit__(ctx, *exc):
+                sys.stdout = orig
+
+        return _Ctx()
+
+    def _tqdm_context(self):
+        """Context manager that redirects tqdm output to the progress signal."""
+        import sys
+        import tqdm as _tqdm_mod
+
+        redirect = _TqdmSignalRedirect(self.progress)
+        # Monkey-patch tqdm's default file to our redirect
+        orig_init = _tqdm_mod.tqdm.__init__
+
+        def patched_init(tqdm_self, *args, **kwargs):
+            kwargs.setdefault("file", redirect)
+            kwargs["leave"] = False
+            kwargs["bar_format"] = "{desc}: {n}/{total} [{elapsed}<{remaining}]"
+            orig_init(tqdm_self, *args, **kwargs)
+
+        class _Ctx:
+            def __enter__(ctx):
+                _tqdm_mod.tqdm.__init__ = patched_init
+                return ctx
+
+            def __exit__(ctx, *exc):
+                _tqdm_mod.tqdm.__init__ = orig_init
+
+        return _Ctx()
 
     def run(self):
         try:
@@ -437,90 +510,121 @@ class FusionWorker(QThread):
                     tf.blend_pixels = (50, 50)
                     self.progress.emit("No adjacent pairs detected — using default 50px blend")
 
-            # Check for multi-region dataset
-            if len(tf._unique_regions) > 1:
-                self.progress.emit(f"Multi-region dataset: {tf._unique_regions}")
-                tf.stitch_all_regions()
-                # Output folder for multi-region
+            # Determine regions to process
+            regions = tf._unique_regions if len(tf._unique_regions) > 1 else [None]
+            is_multi_region = regions[0] is not None
+
+            if is_multi_region:
+                self.progress.emit(f"Multi-region dataset: {len(regions)} regions")
                 output_folder = Path(self.tiff_path).parent / f"{Path(self.tiff_path).stem}_fused"
-                elapsed_time = time.time() - start_time
+                output_folder.mkdir(parents=True, exist_ok=True)
+
+            for region_idx, region in enumerate(regions):
+                if is_multi_region:
+                    region_output = output_folder / f"{region}.ome.zarr"
+                    self.progress.emit(
+                        f"\nRegion {region_idx + 1}/{len(regions)}: {region}"
+                    )
+                    tf = TileFusion(
+                        self.tiff_path,
+                        output_path=region_output,
+                        blend_pixels=self.blend_pixels or (50, 50),
+                        downsample_factors=(self.downsample_factor, self.downsample_factor),
+                        flatfield=self.flatfield,
+                        darkfield=self.darkfield,
+                        registration_z=self.registration_z,
+                        registration_t=self.registration_t,
+                        channel_to_use=self.registration_channel,
+                        region=region,
+                    )
+                    self.progress.emit(
+                        f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each)"
+                    )
+                    cur_output = region_output
+                else:
+                    cur_output = output_path
+
+                # Registration
+                step_start = time.time()
+                metrics_path = cur_output / "metrics.json"
+                if self.do_registration:
+                    self.progress.emit("Registering...")
+                    with self._tqdm_context():
+                        tf.refine_tile_positions_with_cross_correlation()
+                    cur_output.mkdir(parents=True, exist_ok=True)
+                    tf.save_pairwise_metrics(metrics_path)
+                    reg_time = time.time() - step_start
+                    self.progress.emit(
+                        f"Registration: {len(tf.pairwise_metrics)} pairs [{reg_time:.1f}s]"
+                    )
+                else:
+                    tf.threshold = 1.0
+                    self.progress.emit("Using stage positions (no registration)")
+
+                # Optimize
+                self.progress.emit("Optimizing positions...")
+                tf.optimize_shifts(
+                    method="TWO_ROUND_ITERATIVE",
+                    rel_thresh=self.outlier_rel_thresh,
+                    abs_thresh=self.outlier_abs_thresh,
+                    iterative=True,
+                )
+                gc.collect()
+
+                import numpy as np
+                tf._tile_positions = [
+                    tuple(np.array(pos) + off * np.array(tf.pixel_size))
+                    for pos, off in zip(tf._tile_positions, tf.global_offsets)
+                ]
+                opt_time = time.time() - step_start
+                self.progress.emit(f"Positions optimized [{opt_time:.1f}s]")
+
+                # Compute fused space
+                step_start = time.time()
+                self.progress.emit("Computing fused image space...")
+                tf._compute_fused_image_space()
+                tf._pad_to_chunk_multiple()
+                self.progress.emit(f"Output: {tf.padded_shape[0]} x {tf.padded_shape[1]}")
+
+                # Create output store
+                scale0 = cur_output / "scale0" / "image"
+                scale0.parent.mkdir(parents=True, exist_ok=True)
+                tf._create_fused_tensorstore(output_path=scale0)
+
+                # Fuse
+                mode_label = "direct placement" if self.fusion_mode == "direct" else "blended"
+                self.progress.emit(f"Fusing tiles ({mode_label})...")
+                with self._tqdm_context():
+                    tf._fuse_tiles(mode=self.fusion_mode)
+                fuse_time = time.time() - step_start
+                self.progress.emit(f"Tiles fused [{fuse_time:.1f}s]")
+
+                # Metadata
+                ngff = {
+                    "attributes": {"_ARRAY_DIMENSIONS": ["t", "c", "y", "x"]},
+                    "zarr_format": 3,
+                    "node_type": "group",
+                }
+                with open(cur_output / "scale0" / "zarr.json", "w") as f:
+                    json.dump(ngff, f, indent=2)
+
+                # Pyramid
+                step_start = time.time()
+                self.progress.emit("Building pyramid...")
+                with self._tqdm_context():
+                    tf._create_multiscales(cur_output, factors=tf.multiscale_factors)
+                tf._generate_ngff_zarr3_json(
+                    cur_output, resolution_multiples=tf.resolution_multiples
+                )
+                pyramid_time = time.time() - step_start
+                self.progress.emit(f"Pyramid built [{pyramid_time:.1f}s]")
+
+            elapsed_time = time.time() - start_time
+            if is_multi_region:
                 self.output_path = str(output_folder)
                 self.finished.emit(str(output_folder), elapsed_time)
                 return
 
-            # Registration step
-            step_start = time.time()
-            metrics_path = output_path / "metrics.json"
-            if self.do_registration:
-                self.progress.emit("Computing registration...")
-                tf.refine_tile_positions_with_cross_correlation()
-                output_path.mkdir(parents=True, exist_ok=True)
-                tf.save_pairwise_metrics(metrics_path)
-                reg_time = time.time() - step_start
-                self.progress.emit(
-                    f"Registration complete: {len(tf.pairwise_metrics)} pairs [{reg_time:.1f}s]"
-                )
-            else:
-                tf.threshold = 1.0  # Skip registration
-                self.progress.emit("Using stage positions (no registration)")
-
-            # Optimize shifts
-            step_start = time.time()
-            self.progress.emit("Optimizing positions...")
-            tf.optimize_shifts(
-                method="TWO_ROUND_ITERATIVE",
-                rel_thresh=self.outlier_rel_thresh,
-                abs_thresh=self.outlier_abs_thresh,
-                iterative=True,
-            )
-            gc.collect()
-
-            import numpy as np
-
-            tf._tile_positions = [
-                tuple(np.array(pos) + off * np.array(tf.pixel_size))
-                for pos, off in zip(tf._tile_positions, tf.global_offsets)
-            ]
-            opt_time = time.time() - step_start
-            self.progress.emit(f"Positions optimized [{opt_time:.1f}s]")
-
-            # Compute fused space
-            step_start = time.time()
-            self.progress.emit("Computing fused image space...")
-            tf._compute_fused_image_space()
-            tf._pad_to_chunk_multiple()
-            self.progress.emit(f"Output size: {tf.padded_shape[0]} x {tf.padded_shape[1]}")
-
-            # Create output store
-            scale0 = output_path / "scale0" / "image"
-            scale0.parent.mkdir(parents=True, exist_ok=True)
-            tf._create_fused_tensorstore(output_path=scale0)
-
-            # Fuse tiles
-            mode_label = "direct placement" if self.fusion_mode == "direct" else "blended"
-            self.progress.emit(f"Fusing tiles ({mode_label})...")
-            tf._fuse_tiles(mode=self.fusion_mode)
-            fuse_time = time.time() - step_start
-            self.progress.emit(f"Tiles fused [{fuse_time:.1f}s]")
-
-            # Write metadata
-            ngff = {
-                "attributes": {"_ARRAY_DIMENSIONS": ["t", "c", "y", "x"]},
-                "zarr_format": 3,
-                "node_type": "group",
-            }
-            with open(output_path / "scale0" / "zarr.json", "w") as f:
-                json.dump(ngff, f, indent=2)
-
-            # Build multiscales
-            step_start = time.time()
-            self.progress.emit("Building multiscale pyramid...")
-            tf._create_multiscales(output_path, factors=tf.multiscale_factors)
-            tf._generate_ngff_zarr3_json(output_path, resolution_multiples=tf.resolution_multiples)
-            pyramid_time = time.time() - step_start
-            self.progress.emit(f"Pyramid built [{pyramid_time:.1f}s]")
-
-            elapsed_time = time.time() - start_time
             self.output_path = str(output_path)
             self.finished.emit(str(output_path), elapsed_time)
 
@@ -1123,7 +1227,7 @@ class StitcherGUI(QMainWindow):
 
         self.open_existing_button = QPushButton("Open Existing")
         self.open_existing_button.setCursor(Qt.PointingHandCursor)
-        self.open_existing_button.setToolTip("Open a previously stitched .ome.zarr in Napari")
+        self.open_existing_button.setToolTip("Load a previously fused output to view in Napari or compute MIP")
         self.open_existing_button.clicked.connect(self.open_existing_in_napari)
         actions_layout.addWidget(self.open_existing_button)
 
@@ -1523,7 +1627,16 @@ class StitcherGUI(QMainWindow):
         self.log("Flatfield cleared")
 
     def log(self, message):
-        self.log_text.append(message)
+        if message.startswith("\x00PROGRESS:"):
+            # Update last line in-place for progress bars
+            text = message[len("\x00PROGRESS:"):]
+            cursor = self.log_text.textCursor()
+            cursor.movePosition(cursor.End)
+            cursor.select(cursor.LineUnderCursor)
+            cursor.removeSelectedText()
+            cursor.insertText(text)
+        else:
+            self.log_text.append(message)
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
 
     def _flatfield_in_progress(self):
@@ -1631,8 +1744,6 @@ class StitcherGUI(QMainWindow):
         time_str = f"{minutes}m {seconds:.1f}s" if minutes > 0 else f"{seconds:.1f}s"
 
         self.log(f"\nFusion complete! Time: {time_str}\nOutput: {output_path}")
-        self.log("Note: Result saved as OME-Zarr (faster for large datasets). "
-                 "Use 'Export OME-TIFF' if your downstream tool requires it.")
 
         self.open_in_napari()
 
@@ -2025,25 +2136,46 @@ class StitcherGUI(QMainWindow):
             self.log(f"Error exporting OME-TIFF: {e}")
 
     def open_existing_in_napari(self):
-        """Open a previously stitched .ome.zarr folder in Napari."""
+        """Load a previously stitched output so Napari/MIP buttons work."""
         folder = QFileDialog.getExistingDirectory(
-            self, "Select .ome.zarr folder", str(Path.home())
+            self, "Select fused output folder", str(Path.home())
         )
         if not folder:
             return
 
-        if not folder.endswith(".ome.zarr"):
-            self.log("Selected folder is not an .ome.zarr directory")
-            return
+        output_dir = Path(folder)
 
-        # Temporarily set output_path and open in Napari
-        old_output = self.output_path
-        old_multi = self.is_multi_region
-        self.output_path = folder
-        self.is_multi_region = False
-        self.open_in_napari()
-        self.output_path = old_output
-        self.is_multi_region = old_multi
+        # Accept either a .ome.zarr directly or a folder containing .ome.zarr(s)
+        if output_dir.suffix == ".zarr" and ".ome." in output_dir.name:
+            # Single .ome.zarr selected
+            self.output_path = folder
+            self.is_multi_region = False
+            self.regions = []
+            self.region_widget.setVisible(False)
+        else:
+            zarr_subdirs = sorted(output_dir.glob("*.ome.zarr"))
+            if zarr_subdirs:
+                # Multi-region folder
+                self.output_path = folder
+                self.is_multi_region = True
+                self.regions = [d.stem.replace(".ome", "") for d in zarr_subdirs]
+                self.region_combo.blockSignals(True)
+                self.region_combo.clear()
+                self.region_combo.addItems(self.regions)
+                self.region_combo.blockSignals(False)
+                self.region_slider.setMaximum(len(self.regions) - 1)
+                self.region_slider.setValue(0)
+                self.region_widget.setVisible(True)
+            else:
+                self.log("No .ome.zarr found in selected folder")
+                return
+
+        self.napari_button.setEnabled(True)
+        self.mip_button.setEnabled(True)
+        self.export_tiff_button.setEnabled(True)
+        self.log(f"Loaded: {folder}")
+        if self.is_multi_region:
+            self.log(f"Regions: {', '.join(self.regions)}")
 
 
 def main():
