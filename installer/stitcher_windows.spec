@@ -1,30 +1,31 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for Cephla Stitcher — Windows single-exe build."""
+"""PyInstaller spec for Cephla Stitcher — Windows single-exe build.
+
+Run from the installer/ directory:
+  cd installer && python -m PyInstaller stitcher_windows.spec --noconfirm
+"""
 
 import os
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
 
+# Collect all submodules so PyInstaller bundles entire packages
+tilefusion_imports = collect_submodules("tilefusion")
+napari_imports = collect_submodules("napari")
+skimage_imports = collect_submodules("skimage")
+
+# Collect data files needed at runtime
+napari_datas = collect_data_files("napari")
+
 a = Analysis(
     ["entry.py"],
-    pathex=[os.path.join("..", "src"), os.path.join("..")],
+    pathex=[os.path.join("..", "src"), os.path.abspath("..")],
     binaries=[],
-    datas=[
+    datas=napari_datas + [
         (os.path.join("..", "gui", "cephla_logo.svg"), "gui"),
     ],
-    hiddenimports=[
-        "tilefusion",
-        "tilefusion.core",
-        "tilefusion.fusion",
-        "tilefusion.registration",
-        "tilefusion.optimization",
-        "tilefusion.flatfield",
-        "tilefusion.utils",
-        "tilefusion.io",
-        "tilefusion.io.ome_tiff",
-        "tilefusion.io.ome_tiff_tiles",
-        "tilefusion.io.individual_tiffs",
-        "tilefusion.io.zarr",
+    hiddenimports=tilefusion_imports + napari_imports + skimage_imports + [
         "gui",
         "gui.app",
         "installer",
@@ -38,20 +39,33 @@ a = Analysis(
         "PyQt5.QtGui",
         "PyQt5.QtSvg",
         "numpy",
+        "numpy.core._methods",
+        "numpy.lib.format",
         "scipy",
         "scipy.ndimage",
         "scipy.optimize",
         "scipy.signal",
-        "skimage",
-        "skimage.registration",
-        "skimage.metrics",
         "numba",
+        "numba.core",
         "pandas",
         "tifffile",
         "tensorstore",
         "psutil",
         "tqdm",
         "PIL",
+        "ome_zarr",
+        "zarr",
+        "zarr.storage",
+        "dask",
+        "dask.array",
+        "vispy",
+        "vispy.app",
+        "vispy.app.backends._pyqt5",
+        "OpenGL",
+        "OpenGL.GL",
+        "OpenGL.platform.win32",
+        "xml.etree.ElementTree",
+        "importlib.metadata",
     ],
     excludes=["tkinter", "matplotlib", "IPython", "pytest"],
     noarchive=False,
