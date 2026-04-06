@@ -1195,8 +1195,7 @@ class StitcherGUI(QMainWindow):
         # Open in Napari button
         self.napari_button = QPushButton("Open in Napari")
         self.napari_button.setToolTip(
-            "Result saved as OME-Zarr (faster for large datasets).\n"
-            "Use 'Export OME-TIFF' if your downstream tool requires it."
+            "Open the stitched OME-Zarr result in Napari for visualization."
         )
         self.napari_button.setObjectName("napariButton")
         self.napari_button.setMinimumHeight(40)
@@ -1214,16 +1213,6 @@ class StitcherGUI(QMainWindow):
         self.mip_button.clicked.connect(self.compute_mip)
         self.mip_button.setEnabled(False)
         actions_layout.addWidget(self.mip_button)
-
-        self.export_tiff_button = QPushButton("Export OME-TIFF")
-        self.export_tiff_button.setCursor(Qt.PointingHandCursor)
-        self.export_tiff_button.setToolTip(
-            "Export as OME-TIFF for tools that require it.\n"
-            "OME-Zarr (default output) is faster for large datasets."
-        )
-        self.export_tiff_button.clicked.connect(self.export_ome_tiff)
-        self.export_tiff_button.setEnabled(False)
-        actions_layout.addWidget(self.export_tiff_button)
 
         self.open_existing_button = QPushButton("Open Existing")
         self.open_existing_button.setCursor(Qt.PointingHandCursor)
@@ -1716,7 +1705,6 @@ class StitcherGUI(QMainWindow):
         self.run_button.setEnabled(True)
         self.napari_button.setEnabled(True)
         self.mip_button.setEnabled(True)
-        self.export_tiff_button.setEnabled(True)
 
         # Check if this is a multi-region output folder
         output_dir = Path(output_path)
@@ -2103,113 +2091,6 @@ class StitcherGUI(QMainWindow):
         except Exception as e:
             self.log(f"Error computing MIP: {e}")
 
-    def export_ome_tiff(self):
-        """Export stitched result as a single OME-TIFF file."""
-        if not self.output_path:
-            return
-
-        zarr_path = Path(self.output_path)
-        if self.is_multi_region and self.regions:
-            selected_region = self.region_combo.currentText()
-            zarr_path = zarr_path / f"{selected_region}.ome.zarr"
-
-        default_name = zarr_path.stem.replace(".ome", "") + ".ome.tif"
-        default_path = str(zarr_path.parent / default_name)
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export OME-TIFF", default_path, "OME-TIFF (*.ome.tif);;All files (*.*)"
-        )
-        if not file_path:
-            return
-
-        try:
-            import tensorstore as ts
-            import numpy as np
-            import tifffile
-
-            scale0 = zarr_path / "scale0" / "image"
-            store = ts.open(
-                {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(scale0)}}
-            ).result()
-            shape = store.shape
-            est_gb = np.prod(shape) * np.dtype(store.dtype.numpy_dtype).itemsize / 1e9
-            self.log(f"Exporting {shape} to OME-TIFF ({est_gb:.1f} GB)...")
-            if est_gb > 4:
-                self.log(f"Warning: large export ({est_gb:.1f} GB) — this may take a while")
-            QApplication.processEvents()
-
-            is_5d = len(shape) == 5
-            n_t = shape[0]
-            n_c = shape[1]
-            n_z = shape[2] if is_5d else 1
-            h = shape[-2]
-            w = shape[-1]
-            dtype = np.dtype(store.dtype.numpy_dtype)
-
-            # Gather OME metadata from the source dataset
-            ome_metadata = {}
-            try:
-                from tilefusion import TileFusion
-                import json as _json
-                if self.drop_area.file_path:
-                    tf_meta = TileFusion(self.drop_area.file_path)
-                    px = tf_meta._pixel_size[0]
-                    ome_metadata["PhysicalSizeX"] = px
-                    ome_metadata["PhysicalSizeXUnit"] = "\u00b5m"
-                    ome_metadata["PhysicalSizeY"] = px
-                    ome_metadata["PhysicalSizeYUnit"] = "\u00b5m"
-                    if "channel_names" in tf_meta._metadata:
-                        ome_metadata["Channel"] = {
-                            "Name": tf_meta._metadata["channel_names"]
-                        }
-                    acq_path = Path(self.drop_area.file_path) / "acquisition parameters.json"
-                    if acq_path.exists():
-                        with open(acq_path) as f:
-                            acq = _json.load(f)
-                        dz = acq.get("dz(um)")
-                        if dz and is_5d:
-                            ome_metadata["PhysicalSizeZ"] = dz
-                            ome_metadata["PhysicalSizeZUnit"] = "\u00b5m"
-            except Exception:
-                pass
-
-            # Write via disk-backed memmap to avoid OOM
-            import tempfile as _tmp
-            tzcyx_shape = (n_t, n_z, n_c, h, w)
-            tmp_path = _tmp.mktemp(suffix=".dat")
-            mmap = np.memmap(tmp_path, dtype=dtype, mode="w+", shape=tzcyx_shape)
-
-            total_planes = n_t * n_z * n_c
-            done = 0
-            for t in range(n_t):
-                for z in range(n_z):
-                    for c in range(n_c):
-                        if is_5d:
-                            mmap[t, z, c] = np.asarray(store[t, c, z, :, :].read().result())
-                        else:
-                            mmap[t, 0, c] = np.asarray(store[t, c, :, :].read().result())
-                        done += 1
-                        if done % max(1, total_planes // 10) == 0:
-                            self.log(f"Reading: {done}/{total_planes} planes")
-                            QApplication.processEvents()
-            mmap.flush()
-
-            self.log("Writing OME-TIFF...")
-            QApplication.processEvents()
-            tifffile.imwrite(
-                file_path,
-                mmap,
-                ome=True,
-                bigtiff=est_gb > 2,
-                photometric="minisblack",
-                metadata=ome_metadata,
-            )
-            del mmap
-            import os as _os
-            _os.unlink(tmp_path)
-            self.log(f"Exported to {file_path}")
-        except Exception as e:
-            self.log(f"Error exporting OME-TIFF: {e}")
-
     def open_existing_in_napari(self):
         """Load a previously stitched output so Napari/MIP buttons work."""
         folder = QFileDialog.getExistingDirectory(
@@ -2247,7 +2128,6 @@ class StitcherGUI(QMainWindow):
 
         self.napari_button.setEnabled(True)
         self.mip_button.setEnabled(True)
-        self.export_tiff_button.setEnabled(True)
         self.log(f"Loaded: {folder}")
         if self.is_multi_region:
             self.log(f"Regions: {', '.join(self.regions)}")
