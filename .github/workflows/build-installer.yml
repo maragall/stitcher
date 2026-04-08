@@ -1,0 +1,50 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches: [main, user-feedback-fixes, build-cephla-latest]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[gui,flatfield]" pyinstaller "napari[pyqt5]"
+
+      - name: Build with PyInstaller
+        working-directory: installer
+        run: python -m PyInstaller stitcher_windows.spec --noconfirm --distpath ../dist --workpath ../build --clean
+
+      - name: Post-build smoke test
+        continue-on-error: true
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          dist\stitcher-gui\stitcher-gui.exe --smoke-test
+
+      - name: Stage artifact
+        run: |
+          copy README.md dist\stitcher-gui\
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stitcher-windows
+          path: dist/stitcher-gui/
