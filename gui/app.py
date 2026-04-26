@@ -564,6 +564,10 @@ class FusionWorker(QThread):
 
     def run(self):
         try:
+            from tilefusion import TileFusion
+            import gc
+            import json
+            import shutil
             import time
 
             start_time = time.time()
