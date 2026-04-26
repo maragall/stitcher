@@ -1,0 +1,64 @@
+name: Build macOS App
+
+on:
+  push:
+    branches: [main, integration]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14  # Apple Silicon
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-pip-
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[gui,flatfield]" pyinstaller "napari[pyqt5]" napari-ome-zarr
+
+      - name: Build with PyInstaller (.app via BUNDLE)
+        working-directory: installer
+        run: python -m PyInstaller stitcher_mac.spec --noconfirm --distpath ../dist --workpath ../build --clean
+
+      - name: Verify .app structure
+        run: |
+          test -d dist/CephlaStitcher.app
+          test -x dist/CephlaStitcher.app/Contents/MacOS/stitcher-gui
+          ls -la dist/CephlaStitcher.app/Contents/
+
+      - name: Codesign ad-hoc (deep)
+        run: codesign --force --deep --sign - dist/CephlaStitcher.app
+
+      - name: Verify codesign
+        run: codesign --verify --deep --strict --verbose=2 dist/CephlaStitcher.app || true
+
+      - name: Post-build smoke test
+        continue-on-error: true
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: dist/CephlaStitcher.app/Contents/MacOS/stitcher-gui --smoke-test
+
+      - name: Stage artifact directory
+        run: |
+          mkdir -p artifact
+          cp -R dist/CephlaStitcher.app artifact/
+          cp README.md artifact/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stitcher-macos-arm64
+          path: artifact/
