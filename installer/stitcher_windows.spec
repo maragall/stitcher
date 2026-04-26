@@ -35,9 +35,9 @@ a = Analysis(
     ['entry.py'],
     pathex=[os.path.abspath('..')],
     binaries=sklearn_binaries,
-    datas=napari_metadata + [
+    datas=napari_metadata + ([
         (os.path.join('..', 'gui', 'cephla_logo.svg'), 'gui'),
-    ],
+    ] if os.path.exists(os.path.join('..', 'gui', 'cephla_logo.svg')) else []),
     hiddenimports=tilefusion_imports + skimage_imports + [
         'numpy', 'numpy.core._methods', 'numpy.lib.format',
         'scipy', 'scipy.ndimage', 'scipy.optimize', 'scipy.sparse',
@@ -51,6 +51,7 @@ a = Analysis(
         'PyQt5', 'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets', 'PyQt5.QtSvg',
         'gui', 'gui.app',
         'installer', 'installer.smoke_test',
+        'napari_ome_zarr',
         'xml.etree.ElementTree', 'json', 'gc', 'shutil', 'importlib.metadata',
         'matplotlib', 'matplotlib.pyplot', 'matplotlib.backends.backend_agg',
     ],

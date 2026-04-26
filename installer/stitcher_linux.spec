@@ -57,6 +57,7 @@ a = Analysis(
         'PyQt5', 'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets', 'PyQt5.QtSvg',
         'gui', 'gui.app',
         'installer', 'installer.smoke_test',
+        'napari_ome_zarr',
         'xml.etree.ElementTree', 'json', 'gc', 'shutil', 'importlib.metadata',
         'matplotlib', 'matplotlib.pyplot', 'matplotlib.backends.backend_agg',
         'OpenGL', 'OpenGL.GL', 'OpenGL.platform.glx', 'OpenGL.platform.egl',
