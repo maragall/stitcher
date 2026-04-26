@@ -32,9 +32,11 @@ from PyQt5.QtWidgets import (
     QSlider,
     QRadioButton,
     QButtonGroup,
+    QMessageBox,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QDragEnterEvent, QDropEvent
+from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QIcon, QPixmap, QPainter
+from PyQt5.QtSvg import QSvgRenderer
 
 
 STYLE_SHEET = """
@@ -134,6 +136,8 @@ class PreviewWorker(QThread):
         registration_z=None,
         registration_t=0,
         registration_channel=0,
+        outlier_rel_thresh=0.5,
+        outlier_abs_thresh=2.0,
     ):
         super().__init__()
         self.tiff_path = tiff_path
@@ -145,6 +149,8 @@ class PreviewWorker(QThread):
         self.registration_z = registration_z
         self.registration_t = registration_t
         self.registration_channel = registration_channel
+        self.outlier_rel_thresh = outlier_rel_thresh
+        self.outlier_abs_thresh = outlier_abs_thresh
 
     def run(self):
         try:
@@ -239,7 +245,10 @@ class PreviewWorker(QThread):
             self.progress.emit(f"Found {len(tf.pairwise_metrics)} pairs")
 
             tf.optimize_shifts(
-                method="TWO_ROUND_ITERATIVE", rel_thresh=0.5, abs_thresh=2.0, iterative=True
+                method="TWO_ROUND_ITERATIVE",
+                rel_thresh=self.outlier_rel_thresh,
+                abs_thresh=self.outlier_abs_thresh,
+                iterative=True,
             )
             global_offsets = tf.global_offsets
 
@@ -325,6 +334,26 @@ class PreviewWorker(QThread):
             self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
 
 
+class _TqdmSignalRedirect:
+    """Redirect tqdm output to a Qt signal, updating the last log line in-place."""
+
+    update_last_line = pyqtSignal(str)
+
+    def __init__(self, signal):
+        self._signal = signal
+        self._last_text = ""
+
+    def write(self, s):
+        s = s.strip()
+        if s and s != self._last_text:
+            self._last_text = s
+            # Emit with special prefix so log() can update in-place
+            self._signal.emit(f"\x00PROGRESS:{s}")
+
+    def flush(self):
+        pass
+
+
 class FusionWorker(QThread):
     """Worker thread for running tile fusion."""
 
@@ -344,6 +373,8 @@ class FusionWorker(QThread):
         registration_z=None,
         registration_t=0,
         registration_channel=0,
+        outlier_rel_thresh=0.5,
+        outlier_abs_thresh=2.0,
     ):
         super().__init__()
         self.tiff_path = tiff_path
@@ -356,7 +387,62 @@ class FusionWorker(QThread):
         self.registration_z = registration_z
         self.registration_t = registration_t
         self.registration_channel = registration_channel
+        self.outlier_rel_thresh = outlier_rel_thresh
+        self.outlier_abs_thresh = outlier_abs_thresh
         self.output_path = None
+
+    def _stdout_context(self):
+        """Context manager that redirects meaningful print() to the progress signal."""
+        import sys
+
+        signal = self.progress
+        orig = sys.stdout
+
+        class _Redirect:
+            def write(self, s):
+                s = s.strip()
+                # Skip decorative lines and empty output
+                if not s or s.startswith("=") or s.startswith("-"):
+                    return
+                signal.emit(s)
+
+            def flush(self):
+                pass
+
+        class _Ctx:
+            def __enter__(ctx):
+                sys.stdout = _Redirect()
+                return ctx
+
+            def __exit__(ctx, *exc):
+                sys.stdout = orig
+
+        return _Ctx()
+
+    def _tqdm_context(self):
+        """Context manager that redirects tqdm output to the progress signal."""
+        import sys
+        import tqdm as _tqdm_mod
+
+        redirect = _TqdmSignalRedirect(self.progress)
+        # Monkey-patch tqdm's default file to our redirect
+        orig_init = _tqdm_mod.tqdm.__init__
+
+        def patched_init(tqdm_self, *args, **kwargs):
+            kwargs.setdefault("file", redirect)
+            kwargs["leave"] = False
+            kwargs["bar_format"] = "{desc}: {n}/{total} [{elapsed}<{remaining}]"
+            orig_init(tqdm_self, *args, **kwargs)
+
+        class _Ctx:
+            def __enter__(ctx):
+                _tqdm_mod.tqdm.__init__ = patched_init
+                return ctx
+
+            def __exit__(ctx, *exc):
+                _tqdm_mod.tqdm.__init__ = orig_init
+
+        return _Ctx()
 
     def run(self):
         try:
@@ -382,11 +468,11 @@ class FusionWorker(QThread):
             if output_folder.exists():
                 shutil.rmtree(output_folder)
 
-            # Also remove metrics if not doing registration
-            metrics_path = Path(self.tiff_path).parent / "metrics.json"
-            if metrics_path.exists():
-                metrics_path.unlink()
-            # Remove multi-region metrics
+            # Metrics will be saved inside the output .ome.zarr directory
+            # Clean up any old metrics from previous runs in the parent dir
+            old_metrics = Path(self.tiff_path).parent / "metrics.json"
+            if old_metrics.exists():
+                old_metrics.unlink()
             for m in Path(self.tiff_path).parent.glob("metrics_*.json"):
                 m.unlink()
 
@@ -394,7 +480,7 @@ class FusionWorker(QThread):
             tf = TileFusion(
                 self.tiff_path,
                 output_path=output_path,
-                blend_pixels=self.blend_pixels,
+                blend_pixels=self.blend_pixels or (50, 50),
                 downsample_factors=(self.downsample_factor, self.downsample_factor),
                 flatfield=self.flatfield,
                 darkfield=self.darkfield,
@@ -405,85 +491,140 @@ class FusionWorker(QThread):
             load_time = time.time() - step_start
             self.progress.emit(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each) [{load_time:.1f}s]")
 
-            # Check for multi-region dataset
-            if len(tf._unique_regions) > 1:
-                self.progress.emit(f"Multi-region dataset: {tf._unique_regions}")
-                tf.stitch_all_regions()
-                # Output folder for multi-region
+            # Auto-compute blend_pixels from tile overlap if requested
+            if self.blend_pixels is None:
+                from tilefusion.registration import find_adjacent_pairs
+                import numpy as np
+                pairs = find_adjacent_pairs(
+                    tf._tile_positions, tf._pixel_size, (tf.Y, tf.X)
+                )
+                if pairs:
+                    overlaps_y = [p[4] for p in pairs if p[4] > 0]
+                    overlaps_x = [p[5] for p in pairs if p[5] > 0]
+                    median_overlap_y = int(np.median(overlaps_y)) if overlaps_y else 50
+                    median_overlap_x = int(np.median(overlaps_x)) if overlaps_x else 50
+                    blend_pixels = (max(median_overlap_y // 2, 10), max(median_overlap_x // 2, 10))
+                    tf.blend_pixels = blend_pixels
+                    self.progress.emit(f"Auto blend width: {blend_pixels[0]}px (Y), {blend_pixels[1]}px (X)")
+                else:
+                    tf.blend_pixels = (50, 50)
+                    self.progress.emit("No adjacent pairs detected — using default 50px blend")
+
+            # Determine regions to process
+            regions = tf._unique_regions if len(tf._unique_regions) > 1 else [None]
+            is_multi_region = regions[0] is not None
+
+            if is_multi_region:
+                self.progress.emit(f"Multi-region dataset: {len(regions)} regions")
                 output_folder = Path(self.tiff_path).parent / f"{Path(self.tiff_path).stem}_fused"
-                elapsed_time = time.time() - start_time
+                output_folder.mkdir(parents=True, exist_ok=True)
+
+            for region_idx, region in enumerate(regions):
+                if is_multi_region:
+                    region_output = output_folder / f"{region}.ome.zarr"
+                    self.progress.emit(
+                        f"\nRegion {region_idx + 1}/{len(regions)}: {region}"
+                    )
+                    tf = TileFusion(
+                        self.tiff_path,
+                        output_path=region_output,
+                        blend_pixels=self.blend_pixels or (50, 50),
+                        downsample_factors=(self.downsample_factor, self.downsample_factor),
+                        flatfield=self.flatfield,
+                        darkfield=self.darkfield,
+                        registration_z=self.registration_z,
+                        registration_t=self.registration_t,
+                        channel_to_use=self.registration_channel,
+                        region=region,
+                    )
+                    self.progress.emit(
+                        f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each)"
+                    )
+                    cur_output = region_output
+                else:
+                    cur_output = output_path
+
+                # Registration
+                step_start = time.time()
+                metrics_path = cur_output / "metrics.json"
+                if self.do_registration:
+                    self.progress.emit("Registering...")
+                    with self._tqdm_context():
+                        tf.refine_tile_positions_with_cross_correlation()
+                    cur_output.mkdir(parents=True, exist_ok=True)
+                    tf.save_pairwise_metrics(metrics_path)
+                    reg_time = time.time() - step_start
+                    self.progress.emit(
+                        f"Registration: {len(tf.pairwise_metrics)} pairs [{reg_time:.1f}s]"
+                    )
+                else:
+                    tf.threshold = 1.0
+                    self.progress.emit("Using stage positions (no registration)")
+
+                # Optimize
+                self.progress.emit("Optimizing positions...")
+                tf.optimize_shifts(
+                    method="TWO_ROUND_ITERATIVE",
+                    rel_thresh=self.outlier_rel_thresh,
+                    abs_thresh=self.outlier_abs_thresh,
+                    iterative=True,
+                )
+                gc.collect()
+
+                import numpy as np
+                tf._tile_positions = [
+                    tuple(np.array(pos) + off * np.array(tf.pixel_size))
+                    for pos, off in zip(tf._tile_positions, tf.global_offsets)
+                ]
+                opt_time = time.time() - step_start
+                self.progress.emit(f"Positions optimized [{opt_time:.1f}s]")
+
+                # Compute fused space
+                step_start = time.time()
+                self.progress.emit("Computing fused image space...")
+                tf._compute_fused_image_space()
+                tf._pad_to_chunk_multiple()
+                self.progress.emit(f"Output: {tf.padded_shape[0]} x {tf.padded_shape[1]}")
+
+                # Create output store
+                scale0 = cur_output / "scale0" / "image"
+                scale0.parent.mkdir(parents=True, exist_ok=True)
+                tf._create_fused_tensorstore(output_path=scale0)
+
+                # Fuse
+                mode_label = "direct placement" if self.fusion_mode == "direct" else "blended"
+                self.progress.emit(f"Fusing tiles ({mode_label})...")
+                with self._tqdm_context():
+                    tf._fuse_tiles(mode=self.fusion_mode)
+                fuse_time = time.time() - step_start
+                self.progress.emit(f"Tiles fused [{fuse_time:.1f}s]")
+
+                # Metadata
+                ngff = {
+                    "attributes": {"_ARRAY_DIMENSIONS": ["t", "c", "y", "x"]},
+                    "zarr_format": 3,
+                    "node_type": "group",
+                }
+                with open(cur_output / "scale0" / "zarr.json", "w") as f:
+                    json.dump(ngff, f, indent=2)
+
+                # Pyramid
+                step_start = time.time()
+                self.progress.emit("Building pyramid...")
+                with self._tqdm_context():
+                    tf._create_multiscales(cur_output, factors=tf.multiscale_factors)
+                tf._generate_ngff_zarr3_json(
+                    cur_output, resolution_multiples=tf.resolution_multiples
+                )
+                pyramid_time = time.time() - step_start
+                self.progress.emit(f"Pyramid built [{pyramid_time:.1f}s]")
+
+            elapsed_time = time.time() - start_time
+            if is_multi_region:
                 self.output_path = str(output_folder)
                 self.finished.emit(str(output_folder), elapsed_time)
                 return
 
-            # Registration step
-            step_start = time.time()
-            if self.do_registration:
-                self.progress.emit("Computing registration...")
-                tf.refine_tile_positions_with_cross_correlation()
-                tf.save_pairwise_metrics(metrics_path)
-                reg_time = time.time() - step_start
-                self.progress.emit(
-                    f"Registration complete: {len(tf.pairwise_metrics)} pairs [{reg_time:.1f}s]"
-                )
-            else:
-                tf.threshold = 1.0  # Skip registration
-                self.progress.emit("Using stage positions (no registration)")
-
-            # Optimize shifts
-            step_start = time.time()
-            self.progress.emit("Optimizing positions...")
-            tf.optimize_shifts(
-                method="TWO_ROUND_ITERATIVE", rel_thresh=0.5, abs_thresh=2.0, iterative=True
-            )
-            gc.collect()
-
-            import numpy as np
-
-            tf._tile_positions = [
-                tuple(np.array(pos) + off * np.array(tf.pixel_size))
-                for pos, off in zip(tf._tile_positions, tf.global_offsets)
-            ]
-            opt_time = time.time() - step_start
-            self.progress.emit(f"Positions optimized [{opt_time:.1f}s]")
-
-            # Compute fused space
-            step_start = time.time()
-            self.progress.emit("Computing fused image space...")
-            tf._compute_fused_image_space()
-            tf._pad_to_chunk_multiple()
-            self.progress.emit(f"Output size: {tf.padded_shape[0]} x {tf.padded_shape[1]}")
-
-            # Create output store
-            scale0 = output_path / "scale0" / "image"
-            scale0.parent.mkdir(parents=True, exist_ok=True)
-            tf._create_fused_tensorstore(output_path=scale0)
-
-            # Fuse tiles
-            mode_label = "direct placement" if self.fusion_mode == "direct" else "blended"
-            self.progress.emit(f"Fusing tiles ({mode_label})...")
-            tf._fuse_tiles(mode=self.fusion_mode)
-            fuse_time = time.time() - step_start
-            self.progress.emit(f"Tiles fused [{fuse_time:.1f}s]")
-
-            # Write metadata
-            ngff = {
-                "attributes": {"_ARRAY_DIMENSIONS": ["t", "c", "y", "x"]},
-                "zarr_format": 3,
-                "node_type": "group",
-            }
-            with open(output_path / "scale0" / "zarr.json", "w") as f:
-                json.dump(ngff, f, indent=2)
-
-            # Build multiscales
-            step_start = time.time()
-            self.progress.emit("Building multiscale pyramid...")
-            tf._create_multiscales(output_path, factors=tf.multiscale_factors)
-            tf._generate_ngff_zarr3_json(output_path, resolution_multiples=tf.resolution_multiples)
-            pyramid_time = time.time() - step_start
-            self.progress.emit(f"Pyramid built [{pyramid_time:.1f}s]")
-
-            elapsed_time = time.time() - start_time
             self.output_path = str(output_path)
             self.finished.emit(str(output_path), elapsed_time)
 
@@ -511,16 +652,15 @@ class DropArea(QFrame):
         layout.setSpacing(4)
         layout.setContentsMargins(12, 12, 12, 12)
 
-        self.icon_label = QLabel("📂")
-        self.icon_label.setAlignment(Qt.AlignCenter)
-        self.icon_label.setStyleSheet("font-size: 28px; border: none; background: transparent;")
-        layout.addWidget(self.icon_label)
+        layout.addStretch()
 
         self.label = QLabel("Drop OME-TIFF or SQUID folder here\nor click to browse")
         self.label.setAlignment(Qt.AlignCenter)
         self.label.setWordWrap(True)
         self.label.setStyleSheet("border: none; background: transparent;")
         layout.addWidget(self.label)
+
+        layout.addStretch()
 
         self.file_path = None
 
@@ -574,11 +714,7 @@ class DropArea(QFrame):
         self.file_path = file_path
         path = Path(file_path)
         self.setStyleSheet(self._active_style)
-        self.icon_label.setText("✅")
-        if path.is_dir():
-            self.label.setText(f"📁 {path.name}")
-        else:
-            self.label.setText(path.name)
+        self.label.setText(path.name)
 
 
 class FlatfieldDropArea(QFrame):
@@ -598,10 +734,6 @@ class FlatfieldDropArea(QFrame):
 
         layout = QHBoxLayout(self)
         layout.setSpacing(8)
-
-        self.icon_label = QLabel("📄")
-        self.icon_label.setStyleSheet("font-size: 20px; border: none; background: transparent;")
-        layout.addWidget(self.icon_label)
 
         self.label = QLabel("Drop flatfield .npy here or click to browse")
         self.label.setStyleSheet("border: none; background: transparent;")
@@ -645,13 +777,11 @@ class FlatfieldDropArea(QFrame):
         self.file_path = file_path
         path = Path(file_path)
         self.setStyleSheet(self._active_style)
-        self.icon_label.setText("✅")
         self.label.setText(path.name)
 
     def clear(self):
         self.file_path = None
         self.setStyleSheet(self._default_style)
-        self.icon_label.setText("📄")
         self.label.setText("Drop flatfield .npy here or click to browse")
 
 
@@ -671,7 +801,8 @@ class FlatfieldWorker(QThread):
     def run(self):
         try:
             import numpy as np
-            from tilefusion import TileFusion, calculate_flatfield, HAS_BASICPY
+            from basicpy import BaSiC
+            from tilefusion import TileFusion, HAS_BASICPY
 
             if not HAS_BASICPY:
                 self.error.emit("BaSiCPy is not installed. Install with: pip install basicpy")
@@ -684,30 +815,49 @@ class FlatfieldWorker(QThread):
             # must be performed on raw, uncorrected tiles.
             tf = TileFusion(self.file_path)
 
-            # Determine how many tiles to sample
             n_tiles = tf.n_tiles
+            n_channels = tf.channels
             n_samples = min(self.n_samples, n_tiles)
 
-            self.progress.emit(f"Sampling {n_samples} tiles from {n_tiles} total...")
-
-            # Random sample of tile indices
             rng = np.random.default_rng(42)
-            sample_indices = rng.choice(n_tiles, size=n_samples, replace=False)
-            sample_indices = sorted(sample_indices)
+            sample_indices = sorted(rng.choice(n_tiles, size=n_samples, replace=False))
 
-            # Read sampled tiles
-            # NOTE: Using private method tf._read_tile intentionally.
-            # FlatfieldWorker needs direct access to raw tile data for sampling.
-            tiles = []
-            for i, tile_idx in enumerate(sample_indices):
-                self.progress.emit(f"Reading tile {i+1}/{n_samples}...")
-                tile = tf._read_tile(tile_idx)
-                tiles.append(tile)
-
-            self.progress.emit("Calculating flatfield with BaSiCPy...")
-            flatfield, darkfield = calculate_flatfield(
-                tiles, use_darkfield=self.use_darkfield, constant_darkfield=True
+            self.progress.emit(
+                f"Computing flatfield: {n_samples} tiles, {n_channels} channels..."
             )
+
+            # Process per-channel to avoid OOM on large multi-channel z-stacks.
+            # Only one channel's worth of tiles is in memory at a time.
+            tile_shape = (tf.Y, tf.X)
+            flatfield = np.zeros((n_channels,) + tile_shape, dtype=np.float32)
+            darkfield = (
+                np.zeros((n_channels,) + tile_shape, dtype=np.float32)
+                if self.use_darkfield
+                else None
+            )
+
+            for ch in range(n_channels):
+                self.progress.emit(f"Channel {ch + 1}/{n_channels}: reading tiles...")
+                # Load only this channel per tile to minimize memory.
+                # _read_tile_region reads one z-level; we index the channel.
+                images = np.empty((n_samples,) + tile_shape, dtype=np.float32)
+                for i, tile_idx in enumerate(sample_indices):
+                    tile = tf._read_tile(tile_idx)  # (C, Y, X), one z-level
+                    images[i] = tile[ch if ch < tile.shape[0] else 0]
+                    del tile
+
+                self.progress.emit(f"Channel {ch + 1}/{n_channels}: fitting BaSiCPy...")
+
+                self.progress.emit(f"Channel {ch + 1}/{n_channels}: fitting BaSiCPy...")
+                basic = BaSiC(get_darkfield=self.use_darkfield, smoothness_flatfield=1.0)
+                basic.fit(images)
+                flatfield[ch] = basic.flatfield.astype(np.float32)
+
+                if self.use_darkfield:
+                    df_value = np.median(basic.darkfield)
+                    darkfield[ch] = np.full(tile_shape, df_value, dtype=np.float32)
+
+                del images
 
             self.progress.emit("Flatfield calculation complete!")
             self.finished.emit(flatfield, darkfield)
@@ -723,8 +873,9 @@ class StitcherGUI(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Stitcher")
+        self.setWindowTitle("Cephla Stitcher")
         self.setMinimumSize(580, 850)
+        self._set_cephla_icon()
 
         self.worker = None
         self.output_path = None
@@ -778,7 +929,7 @@ class StitcherGUI(QMainWindow):
 
         preview_layout.addStretch()
 
-        self.preview_button = QPushButton("👁 Preview")
+        self.preview_button = QPushButton("Preview")
         self.preview_button.setObjectName("previewButton")
         self.preview_button.setCursor(Qt.PointingHandCursor)
         self.preview_button.clicked.connect(self.run_preview)
@@ -897,13 +1048,13 @@ class StitcherGUI(QMainWindow):
         settings_layout.setSpacing(8)
 
         self.registration_checkbox = QCheckBox("Enable registration refinement")
-        self.registration_checkbox.setChecked(False)
+        self.registration_checkbox.setChecked(True)
         self.registration_checkbox.toggled.connect(self.on_registration_toggled)
         settings_layout.addWidget(self.registration_checkbox)
 
         # Downsample factor (shown when registration enabled)
         self.downsample_widget = QWidget()
-        self.downsample_widget.setVisible(False)
+        self.downsample_widget.setVisible(True)
         downsample_layout = QHBoxLayout(self.downsample_widget)
         downsample_layout.setContentsMargins(20, 0, 0, 0)
         downsample_layout.addWidget(QLabel("Downsample:"))
@@ -946,27 +1097,62 @@ class StitcherGUI(QMainWindow):
         settings_layout.addWidget(self.reg_zt_widget)
 
         self.blend_checkbox = QCheckBox("Enable blending")
-        self.blend_checkbox.setChecked(False)
+        self.blend_checkbox.setChecked(True)
         self.blend_checkbox.toggled.connect(self.on_blend_toggled)
         settings_layout.addWidget(self.blend_checkbox)
 
         # Blend pixels (shown when blending enabled)
         self.blend_value_widget = QWidget()
-        self.blend_value_widget.setVisible(False)
+        self.blend_value_widget.setVisible(True)
         blend_value_layout = QHBoxLayout(self.blend_value_widget)
         blend_value_layout.setContentsMargins(20, 0, 0, 0)
         blend_value_layout.addWidget(QLabel("Blend pixels:"))
+        self.blend_auto_checkbox = QCheckBox("Auto")
+        self.blend_auto_checkbox.setChecked(True)
+        self.blend_auto_checkbox.setToolTip("Auto-compute blend width as half the tile overlap")
+        self.blend_auto_checkbox.toggled.connect(lambda checked: self.blend_spin.setEnabled(not checked))
+        blend_value_layout.addWidget(self.blend_auto_checkbox)
         self.blend_spin = QSpinBox()
         self.blend_spin.setRange(1, 500)
         self.blend_spin.setValue(50)
+        self.blend_spin.setEnabled(False)
         blend_value_layout.addWidget(self.blend_spin)
         blend_value_layout.addStretch()
         settings_layout.addWidget(self.blend_value_widget)
 
+        # Outlier threshold controls (shown when registration enabled)
+        self.outlier_widget = QWidget()
+        self.outlier_widget.setVisible(False)
+        outlier_layout = QHBoxLayout(self.outlier_widget)
+        outlier_layout.setContentsMargins(20, 0, 0, 0)
+        outlier_layout.addWidget(QLabel("Outlier rel:"))
+        self.outlier_rel_spin = QSpinBox()
+        self.outlier_rel_spin.setRange(1, 200)
+        self.outlier_rel_spin.setValue(50)
+        self.outlier_rel_spin.setSuffix("%")
+        self.outlier_rel_spin.setToolTip("Relative threshold: reject links with residual > this % of median")
+        self.outlier_rel_spin.setFixedWidth(80)
+        outlier_layout.addWidget(self.outlier_rel_spin)
+        outlier_layout.addWidget(QLabel("abs:"))
+        self.outlier_abs_spin = QSpinBox()
+        self.outlier_abs_spin.setRange(1, 50)
+        self.outlier_abs_spin.setValue(2)
+        self.outlier_abs_spin.setSuffix("px")
+        self.outlier_abs_spin.setToolTip("Absolute threshold: minimum residual (pixels) to reject a link")
+        self.outlier_abs_spin.setFixedWidth(80)
+        outlier_layout.addWidget(self.outlier_abs_spin)
+        outlier_layout.addStretch()
+        settings_layout.addWidget(self.outlier_widget)
+
+        # Show outlier controls when registration is enabled
+        self.registration_checkbox.toggled.connect(
+            lambda checked: self.outlier_widget.setVisible(checked)
+        )
+
         layout.addWidget(settings_group)
 
         # Run button
-        self.run_button = QPushButton("▶ Run Stitching")
+        self.run_button = QPushButton("Run Stitching")
         self.run_button.setObjectName("runButton")
         self.run_button.setMinimumHeight(40)
         self.run_button.setCursor(Qt.PointingHandCursor)
@@ -1007,7 +1193,10 @@ class StitcherGUI(QMainWindow):
         layout.addWidget(self.region_widget)
 
         # Open in Napari button
-        self.napari_button = QPushButton("🔬 Open in Napari")
+        self.napari_button = QPushButton("Open in Napari")
+        self.napari_button.setToolTip(
+            "Open the stitched OME-Zarr result in Napari for visualization."
+        )
         self.napari_button.setObjectName("napariButton")
         self.napari_button.setMinimumHeight(40)
         self.napari_button.setCursor(Qt.PointingHandCursor)
@@ -1015,7 +1204,64 @@ class StitcherGUI(QMainWindow):
         self.napari_button.setEnabled(False)
         layout.addWidget(self.napari_button)
 
+        # Additional action buttons row
+        actions_layout = QHBoxLayout()
+
+        self.mip_button = QPushButton("Max Projection")
+        self.mip_button.setCursor(Qt.PointingHandCursor)
+        self.mip_button.setToolTip("Compute max intensity projection of 3D result")
+        self.mip_button.clicked.connect(self.compute_mip)
+        self.mip_button.setEnabled(False)
+        actions_layout.addWidget(self.mip_button)
+
+        self.open_existing_button = QPushButton("Open Existing")
+        self.open_existing_button.setCursor(Qt.PointingHandCursor)
+        self.open_existing_button.setToolTip("Load a previously fused output to view in Napari or compute MIP")
+        self.open_existing_button.clicked.connect(self.open_existing_in_napari)
+        actions_layout.addWidget(self.open_existing_button)
+
+        layout.addLayout(actions_layout)
+
         layout.addStretch()
+
+        # Subtle branding — logo + text
+        brand_widget = QWidget()
+        brand_layout = QHBoxLayout(brand_widget)
+        brand_layout.setContentsMargins(0, 4, 0, 6)
+        brand_layout.setSpacing(5)
+        brand_layout.addStretch()
+
+        logo_path = Path(__file__).parent / "cephla_logo.svg"
+        if logo_path.exists():
+            logo_label = QLabel()
+            renderer = QSvgRenderer(str(logo_path))
+            pm = QPixmap(16, 16)
+            pm.fill(Qt.transparent)
+            p = QPainter(pm)
+            renderer.render(p)
+            p.end()
+            logo_label.setPixmap(pm)
+            brand_layout.addWidget(logo_label)
+
+        brand_text = QLabel("cephla")
+        brand_text.setStyleSheet(
+            "color: #31c4f3; font-size: 10px; letter-spacing: 3px;"
+        )
+        brand_layout.addWidget(brand_text)
+        brand_layout.addStretch()
+        layout.addWidget(brand_widget)
+
+    def _set_cephla_icon(self):
+        """Set the Cephla logo as window icon."""
+        logo_path = Path(__file__).parent / "cephla_logo.svg"
+        if logo_path.exists():
+            renderer = QSvgRenderer(str(logo_path))
+            pixmap = QPixmap(64, 64)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            renderer.render(painter)
+            painter.end()
+            self.setWindowIcon(QIcon(pixmap))
 
     def on_file_dropped(self, file_path):
         path = Path(file_path)
@@ -1026,6 +1272,12 @@ class StitcherGUI(QMainWindow):
         self.run_button.setEnabled(True)
         self.preview_button.setEnabled(True)
         self.calc_flatfield_button.setEnabled(True)
+
+        # Re-assert quality defaults on every new dataset load
+        self.blend_checkbox.setChecked(True)
+        self.blend_auto_checkbox.setChecked(True)
+        self.registration_checkbox.setChecked(True)
+
         # Clear previous flatfield when new file is selected
         self.flatfield = None
         self.darkfield = None
@@ -1076,7 +1328,10 @@ class StitcherGUI(QMainWindow):
             self.on_flatfield_dropped(str(flatfield_path))
             self.flatfield_drop_area.setFile(str(flatfield_path))
         else:
-            self.flatfield_checkbox.setChecked(False)
+            # Auto-calculate flatfield instead of silently disabling correction
+            self.flatfield_checkbox.setChecked(True)
+            self.log("No existing flatfield found — auto-calculating from tiles...")
+            self._auto_calculate_flatfield()
 
     def on_registration_toggled(self, checked):
         self.downsample_widget.setVisible(checked)
@@ -1127,6 +1382,45 @@ class StitcherGUI(QMainWindow):
         is_calculate = self.calc_radio.isChecked()
         self.calc_options_widget.setVisible(is_calculate)
         self.load_options_widget.setVisible(not is_calculate)
+
+    def _auto_calculate_flatfield(self):
+        """Auto-calculate flatfield when no .npy file exists for the loaded dataset."""
+        if not self.drop_area.file_path:
+            self.flatfield_checkbox.setChecked(False)
+            return
+
+        try:
+            from tilefusion import HAS_BASICPY
+
+            if not HAS_BASICPY:
+                self.log("BaSiCPy not installed — flatfield correction disabled.")
+                self.flatfield_checkbox.setChecked(False)
+                return
+        except ImportError:
+            self.flatfield_checkbox.setChecked(False)
+            return
+
+        self.flatfield_status.setText("Auto-calculating flatfield...")
+        self.flatfield_status.setStyleSheet("color: #ff9500; font-size: 11px;")
+        self.calc_flatfield_button.setEnabled(False)
+
+        self.flatfield_worker = FlatfieldWorker(
+            self.drop_area.file_path,
+            n_samples=50,
+            use_darkfield=self.darkfield_checkbox.isChecked(),
+        )
+        self.flatfield_worker.progress.connect(self.log)
+        self.flatfield_worker.finished.connect(self.on_flatfield_calculated)
+        self.flatfield_worker.error.connect(self._on_auto_flatfield_error)
+        self.flatfield_worker.start()
+
+    def _on_auto_flatfield_error(self, error_msg):
+        """Handle auto-flatfield calculation failure gracefully."""
+        self.calc_flatfield_button.setEnabled(True)
+        self.flatfield_checkbox.setChecked(False)
+        self.flatfield_status.setText("Auto-calculation failed — disabled")
+        self.flatfield_status.setStyleSheet("color: #ff3b30; font-size: 11px;")
+        self.log(f"Auto-flatfield failed: {error_msg}")
 
     def calculate_flatfield(self):
         if not self.drop_area.file_path:
@@ -1322,11 +1616,41 @@ class StitcherGUI(QMainWindow):
         self.log("Flatfield cleared")
 
     def log(self, message):
-        self.log_text.append(message)
+        if message.startswith("\x00PROGRESS:"):
+            # Update last line in-place for progress bars
+            text = message[len("\x00PROGRESS:"):]
+            cursor = self.log_text.textCursor()
+            cursor.movePosition(cursor.End)
+            cursor.select(cursor.LineUnderCursor)
+            cursor.removeSelectedText()
+            cursor.insertText(text)
+        else:
+            self.log_text.append(message)
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
+
+    def _flatfield_in_progress(self):
+        """Check if flatfield calculation is still running."""
+        return (
+            self.flatfield_worker is not None
+            and self.flatfield_worker.isRunning()
+        )
 
     def run_stitching(self):
         if not self.drop_area.file_path:
+            return
+
+        if self._flatfield_in_progress():
+            self.log("Waiting for flatfield calculation to finish...")
+            self.run_button.setEnabled(False)
+            self.preview_button.setEnabled(False)
+            # One-shot connection — disconnect after firing to prevent stacking
+            def _on_ready(*_args):
+                try:
+                    self.flatfield_worker.finished.disconnect(_on_ready)
+                except TypeError:
+                    pass
+                self.run_stitching()
+            self.flatfield_worker.finished.connect(_on_ready)
             return
 
         self.run_button.setEnabled(False)
@@ -1335,8 +1659,11 @@ class StitcherGUI(QMainWindow):
         self.log_text.clear()
 
         if self.blend_checkbox.isChecked():
-            blend_val = self.blend_spin.value()
-            blend_pixels = (blend_val, blend_val)
+            if self.blend_auto_checkbox.isChecked():
+                blend_pixels = None  # Auto-compute from overlap in FusionWorker
+            else:
+                blend_val = self.blend_spin.value()
+                blend_pixels = (blend_val, blend_val)
             fusion_mode = "blended"
         else:
             blend_pixels = (0, 0)
@@ -1364,6 +1691,8 @@ class StitcherGUI(QMainWindow):
             registration_z=registration_z,
             registration_t=registration_t,
             registration_channel=registration_channel,
+            outlier_rel_thresh=self.outlier_rel_spin.value() / 100.0,
+            outlier_abs_thresh=float(self.outlier_abs_spin.value()),
         )
         self.worker.progress.connect(self.log)
         self.worker.finished.connect(self.on_fusion_finished)
@@ -1375,6 +1704,7 @@ class StitcherGUI(QMainWindow):
         self.progress_bar.setVisible(False)
         self.run_button.setEnabled(True)
         self.napari_button.setEnabled(True)
+        self.mip_button.setEnabled(True)
 
         # Check if this is a multi-region output folder
         output_dir = Path(output_path)
@@ -1401,15 +1731,30 @@ class StitcherGUI(QMainWindow):
         seconds = elapsed_time % 60
         time_str = f"{minutes}m {seconds:.1f}s" if minutes > 0 else f"{seconds:.1f}s"
 
-        self.log(f"\n✓ Fusion complete! Time: {time_str}\nOutput: {output_path}")
+        self.log(f"\nFusion complete! Time: {time_str}\nOutput: {output_path}")
+
+        self.open_in_napari()
 
     def on_fusion_error(self, error_msg):
         self.progress_bar.setVisible(False)
         self.run_button.setEnabled(True)
-        self.log(f"\n✗ {error_msg}")
+        self.log(f"\nError: {error_msg}")
 
     def run_preview(self):
         if not self.drop_area.file_path:
+            return
+
+        if self._flatfield_in_progress():
+            self.log("Waiting for flatfield calculation to finish...")
+            self.run_button.setEnabled(False)
+            self.preview_button.setEnabled(False)
+            def _on_ready(*_args):
+                try:
+                    self.flatfield_worker.finished.disconnect(_on_ready)
+                except TypeError:
+                    pass
+                self.run_preview()
+            self.flatfield_worker.finished.connect(_on_ready)
             return
 
         self.preview_button.setEnabled(False)
@@ -1439,6 +1784,8 @@ class StitcherGUI(QMainWindow):
             registration_z=registration_z,
             registration_t=registration_t,
             registration_channel=registration_channel,
+            outlier_rel_thresh=self.outlier_rel_spin.value() / 100.0,
+            outlier_abs_thresh=float(self.outlier_abs_spin.value()),
         )
         self.preview_worker.progress.connect(self.log)
         self.preview_worker.finished.connect(self.on_preview_finished)
@@ -1470,7 +1817,7 @@ class StitcherGUI(QMainWindow):
         self.progress_bar.setVisible(False)
         self.preview_button.setEnabled(True)
         self.run_button.setEnabled(True)
-        self.log(f"\n✗ {error_msg}")
+        self.log(f"\nError: {error_msg}")
 
     def _on_region_combo_changed(self, index):
         """Sync slider when dropdown changes."""
@@ -1594,12 +1941,24 @@ class StitcherGUI(QMainWindow):
             has_zt_dims = is_5d and (n_z > 1 or shape[0] > 1)  # shape[0] is T
 
             if has_zt_dims:
-                # Load full 5D data for z/t sliders (use only scale0 for memory)
-                store = pyramid_data[0]
-                self.log(f"Loading full volume: T={shape[0]}, C={n_channels}, Z={n_z}")
+                # Use a downsampled level to avoid OOM on large z-stacks.
+                # Prefer scale2 (4x downsample) if available, else lowest available.
+                ds_idx = min(2, len(pyramid_data) - 1)
+                store = pyramid_data[ds_idx]
+                ds_shape = store.shape
+                ds_label = f"scale{ds_idx}" if ds_idx > 0 else "full resolution"
+                self.log(
+                    f"Loading volume ({ds_label}): T={ds_shape[0]}, C={ds_shape[1]}, "
+                    f"Z={ds_shape[2]}, {ds_shape[3]}x{ds_shape[4]}"
+                )
+                est_gb = ds_shape[0] * ds_shape[2] * ds_shape[3] * ds_shape[4] * 2 / 1e9
+                if est_gb * n_channels > 12:
+                    self.log(
+                        f"Warning: estimated {est_gb * n_channels:.1f} GB needed. "
+                        "May exceed available RAM."
+                    )
 
                 for c in range(n_channels):
-                    # Read full t, z for this channel: (T, Z, Y, X)
                     data = store[:, c, :, :, :].read().result()
                     data = np.asarray(data)
 
@@ -1674,6 +2033,104 @@ class StitcherGUI(QMainWindow):
             napari.run()
         except Exception as e:
             self.log(f"Error opening Napari: {e}")
+
+
+    def compute_mip(self):
+        """Compute and display max intensity projection in Napari."""
+        if not self.output_path:
+            return
+
+        try:
+            import napari
+            import tensorstore as ts
+            import numpy as np
+
+            zarr_path = Path(self.output_path)
+            if self.is_multi_region and self.regions:
+                selected_region = self.region_combo.currentText()
+                zarr_path = zarr_path / f"{selected_region}.ome.zarr"
+
+            scale0 = zarr_path / "scale0" / "image"
+            if not scale0.exists():
+                self.log("No image data found for MIP")
+                return
+
+            store = ts.open(
+                {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(scale0)}}
+            ).result()
+            shape = store.shape
+            is_5d = len(shape) == 5
+
+            if not is_5d or shape[2] <= 1:
+                self.log("Dataset is 2D — max projection not applicable")
+                return
+
+            n_z = shape[2]
+            self.log(f"Computing max intensity projection (Z={n_z} planes)...")
+            viewer = napari.Viewer()
+            n_channels = shape[1]
+
+            channel_colors = ["blue", "green", "yellow", "red", "magenta", "cyan"]
+            for c in range(n_channels):
+                # Compute MIP one z-plane at a time to avoid OOM
+                mip = None
+                for z in range(n_z):
+                    plane = np.asarray(store[0, c, z, :, :].read().result())
+                    if mip is None:
+                        mip = plane.copy()
+                    else:
+                        np.maximum(mip, plane, out=mip)
+                viewer.add_image(
+                    mip,
+                    name=f"MIP Ch{c}",
+                    colormap=channel_colors[c % len(channel_colors)],
+                    blending="additive",
+                )
+                del mip
+            napari.run()
+        except Exception as e:
+            self.log(f"Error computing MIP: {e}")
+
+    def open_existing_in_napari(self):
+        """Load a previously stitched output so Napari/MIP buttons work."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select fused output folder", str(Path.home())
+        )
+        if not folder:
+            return
+
+        output_dir = Path(folder)
+
+        # Accept either a .ome.zarr directly or a folder containing .ome.zarr(s)
+        if output_dir.suffix == ".zarr" and ".ome." in output_dir.name:
+            # Single .ome.zarr selected
+            self.output_path = folder
+            self.is_multi_region = False
+            self.regions = []
+            self.region_widget.setVisible(False)
+        else:
+            zarr_subdirs = sorted(output_dir.glob("*.ome.zarr"))
+            if zarr_subdirs:
+                # Multi-region folder
+                self.output_path = folder
+                self.is_multi_region = True
+                self.regions = [d.stem.replace(".ome", "") for d in zarr_subdirs]
+                self.region_combo.blockSignals(True)
+                self.region_combo.clear()
+                self.region_combo.addItems(self.regions)
+                self.region_combo.blockSignals(False)
+                self.region_slider.setMaximum(len(self.regions) - 1)
+                self.region_slider.setValue(0)
+                self.region_widget.setVisible(True)
+            else:
+                self.log("No .ome.zarr found in selected folder")
+                return
+
+        self.napari_button.setEnabled(True)
+        self.mip_button.setEnabled(True)
+        self.log(f"Loaded: {folder}")
+        if self.is_multi_region:
+            self.log(f"Regions: {', '.join(self.regions)}")
 
 
 def main():

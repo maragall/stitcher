@@ -2,11 +2,113 @@
 Global position optimization.
 
 Least-squares optimization of tile positions from pairwise measurements.
+Uses minimum spanning tree (MST) to select the most reliable links
+before optimization, reducing noise from redundant/bad links.
 """
 
+import logging
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+def _build_mst_links(links: List[Dict[str, Any]], n_tiles: int) -> List[Dict[str, Any]]:
+    """
+    Select links forming a minimum spanning tree (maximum-weight spanning tree,
+    since higher SSIM weight = more reliable).
+
+    Uses Kruskal's algorithm on the negated weights.
+
+    Parameters
+    ----------
+    links : list of dict
+        All available links with 'i', 'j', 'w' keys.
+    n_tiles : int
+        Total number of tiles.
+
+    Returns
+    -------
+    mst_links : list of dict
+        Subset of links forming the MST.
+    """
+    if not links:
+        return []
+
+    # Sort by weight descending (we want maximum spanning tree)
+    sorted_links = sorted(links, key=lambda l: l["w"], reverse=True)
+
+    # Union-Find for Kruskal's
+    parent = list(range(n_tiles))
+    rank = [0] * n_tiles
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        rx, ry = find(x), find(y)
+        if rx == ry:
+            return False
+        if rank[rx] < rank[ry]:
+            rx, ry = ry, rx
+        parent[ry] = rx
+        if rank[rx] == rank[ry]:
+            rank[rx] += 1
+        return True
+
+    mst_links = []
+    for link in sorted_links:
+        if union(link["i"], link["j"]):
+            mst_links.append(link)
+        if len(mst_links) == n_tiles - 1:
+            break
+
+    return mst_links
+
+
+def _check_connectivity(links: List[Dict[str, Any]], n_tiles: int) -> List[List[int]]:
+    """
+    Check graph connectivity and return connected components.
+
+    Parameters
+    ----------
+    links : list of dict
+        Links with 'i', 'j' keys.
+    n_tiles : int
+        Total number of tiles.
+
+    Returns
+    -------
+    components : list of list of int
+        Each inner list is a connected component (list of tile indices).
+        If fully connected, returns a single list of all tile indices.
+    """
+    parent = list(range(n_tiles))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[ry] = rx
+
+    for link in links:
+        union(link["i"], link["j"])
+
+    components = {}
+    for i in range(n_tiles):
+        root = find(i)
+        components.setdefault(root, []).append(i)
+
+    return list(components.values())
 
 
 def solve_global(links: List[Dict[str, Any]], n_tiles: int, fixed_indices: List[int]) -> np.ndarray:
@@ -60,10 +162,13 @@ def two_round_optimization(
 ) -> np.ndarray:
     """
     Perform two-round (or iterative two-round) robust optimization:
-    1. Solve on all links.
-    2. Remove any link whose residual > max(abs_thresh, rel_thresh * median(residuals)).
-    3. Re-solve on the remaining links.
-    If iterative=True, repeat step 2 + 3 until no more links are removed.
+    1. Select MST links for robustness (fewer, higher-quality links).
+    2. Solve on MST links.
+    3. Remove any link whose residual > max(abs_thresh, rel_thresh * median(residuals)).
+    4. Re-solve on the remaining links.
+    If iterative=True, repeat step 3 + 4 until no more links are removed.
+
+    Also checks for disconnected components and warns the user.
 
     Parameters
     ----------
@@ -85,12 +190,37 @@ def two_round_optimization(
     shifts : ndarray of shape (n_tiles, 2)
         Optimized shifts.
     """
-    shifts = solve_global(links, n_tiles, fixed_indices)
+    # Use MST for initial solve — reduces noise from redundant links
+    mst_links = _build_mst_links(links, n_tiles)
+
+    if len(mst_links) < len(links):
+        logger.info(
+            "MST selected %d of %d links for optimization", len(mst_links), len(links)
+        )
+
+    # Check connectivity
+    components = _check_connectivity(mst_links, n_tiles)
+    if len(components) > 1:
+        sizes = sorted([len(c) for c in components], reverse=True)
+        disconnected_tiles = sum(sizes[1:])
+        logger.warning(
+            "Tile graph has %d disconnected components (%d tiles disconnected). "
+            "Disconnected tiles will use stage positions.",
+            len(components), disconnected_tiles,
+        )
+        print(
+            f"WARNING: {len(components)} disconnected tile groups detected "
+            f"({disconnected_tiles} tiles may be misaligned). "
+            f"Component sizes: {sizes}"
+        )
+
+    # Solve on MST links
+    work = mst_links.copy()
+    shifts = solve_global(work, n_tiles, fixed_indices)
 
     def compute_res(ls: List[Dict[str, Any]], sh: np.ndarray) -> np.ndarray:
         return np.array([np.linalg.norm(sh[l["j"]] - sh[l["i"]] - l["t"]) for l in ls])
 
-    work = links.copy()
     res = compute_res(work, shifts)
     if len(res) == 0:
         return shifts

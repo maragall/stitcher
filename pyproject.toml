@@ -73,6 +73,7 @@ all = [
 [project.scripts]
 stitcher-gui = "gui.app:main"
 convert-to-zarr = "scripts.convert_to_zarr:main"
+napari-zarr-viewer = "scripts.view_in_napari:main"
 
 [project.urls]
 Homepage = "https://github.com/cephla/tilefusion"

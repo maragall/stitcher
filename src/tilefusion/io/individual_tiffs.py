@@ -283,6 +283,22 @@ def read_individual_tiffs_tile(
         arr = tifffile.imread(img_path)
         channels.append(arr)
 
+    # Handle mismatched channel shapes by padding smaller arrays to the largest shape
+    if len(channels) > 1:
+        shapes = [ch.shape for ch in channels]
+        if len(set(shapes)) > 1:
+            max_h = max(s[0] for s in shapes)
+            max_w = max(s[1] for s in shapes)
+            padded = []
+            for ch in channels:
+                if ch.shape[0] < max_h or ch.shape[1] < max_w:
+                    out = np.zeros((max_h, max_w), dtype=ch.dtype)
+                    out[: ch.shape[0], : ch.shape[1]] = ch
+                    padded.append(out)
+                else:
+                    padded.append(ch)
+            channels = padded
+
     stacked = np.stack(channels, axis=0)
     return stacked.astype(np.float32)
 

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Cephla Stitcher
+Comment=GPU/CPU-accelerated tile stitching for microscopy
+Exec=stitcher-gui
+Icon=stitcher
+Categories=Science;Education;
+Terminal=false
