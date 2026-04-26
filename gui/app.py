@@ -603,8 +603,7 @@ class FusionWorker(QThread):
                 darkfield=self.darkfield,
                 registration_z=self.registration_z,
                 registration_t=self.registration_t,
-                registration_channel=self.registration_channel,
-                log_fn=self.progress.emit,
+                channel_to_use=self.registration_channel,
             )
             load_time = time.time() - step_start
             self.progress.emit(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each) [{load_time:.1f}s]")

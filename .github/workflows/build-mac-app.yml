@@ -29,6 +29,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install ".[gui,flatfield]" pyinstaller "napari[pyqt5]" napari-ome-zarr
 
+      - name: Validate gui/tilefusion signatures
+        run: python installer/validate_signatures.py
+
       - name: Build with PyInstaller (.app via BUNDLE)
         working-directory: installer
         run: python -m PyInstaller stitcher_mac.spec --noconfirm --distpath ../dist --workpath ../build --clean
