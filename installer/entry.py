@@ -23,13 +23,16 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
-# Force VisPy's legacy QGLWidget so the bundled (and patched) vispy avoids
-# the QOpenGLWidget FBO corruption on NVIDIA Blackwell GPUs. Setting it
-# unconditionally is safe — the legacy widget renders directly to the
-# window surface and works on every GPU. Must be set BEFORE vispy imports.
-os.environ.setdefault("VISPY_USE_LEGACY_QGLWIDGET", "1")
-
 import sys
+# Force VisPy's legacy QGLWidget on Linux/Windows so the bundled (and
+# patched) vispy avoids the QOpenGLWidget FBO corruption on NVIDIA
+# Blackwell GPUs. SKIP on macOS — Apple deprecated the legacy QGLWidget
+# years ago and the modern macOS Qt build renders it to a context that
+# gives a blank white canvas. Macs don't ship Blackwell GPUs anyway.
+# Must be set BEFORE vispy imports.
+if sys.platform != "darwin":
+    os.environ.setdefault("VISPY_USE_LEGACY_QGLWIDGET", "1")
+
 import traceback
 import threading
 
