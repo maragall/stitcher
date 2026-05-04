@@ -41,7 +41,7 @@ STYLE_SHEET = """
 QGroupBox {
     font-weight: bold;
     margin-top: 12px;
-    padding-top: 8px;
+    padding-top: 16px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
@@ -106,6 +106,7 @@ QPushButton#calcFlatfieldButton {
     border: none;
     border-radius: 6px;
     padding: 8px 16px;
+    min-height: 20px;
 }
 QPushButton#calcFlatfieldButton:hover {
     background-color: #6866e0;
@@ -822,7 +823,7 @@ class StitcherGUI(QMainWindow):
         # Calculate options container
         self.calc_options_widget = QWidget()
         calc_options_layout = QVBoxLayout(self.calc_options_widget)
-        calc_options_layout.setContentsMargins(0, 0, 0, 0)
+        calc_options_layout.setContentsMargins(0, 4, 0, 0)
         calc_options_layout.setSpacing(8)
 
         self.darkfield_checkbox = QCheckBox("Include darkfield correction")
@@ -842,6 +843,7 @@ class StitcherGUI(QMainWindow):
         self.save_flatfield_button.clicked.connect(self.save_flatfield)
         self.save_flatfield_button.setEnabled(False)
         self.save_flatfield_button.setToolTip("Save calculated flatfield to .npy file")
+        self.save_flatfield_button.setMinimumHeight(36)
         calc_btn_layout.addWidget(self.save_flatfield_button)
         calc_btn_layout.addStretch()
         calc_options_layout.addLayout(calc_btn_layout)
