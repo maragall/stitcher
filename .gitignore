@@ -216,5 +216,5 @@ CLAUDE.md
 # Brainstorming visual companion (local mockups)
 .superpowers/
 
-# Memory profiler output
-profile_out/
+# Memory profiler output (scratch run dirs; committed baselines live in docs/)
+profile_out*/
