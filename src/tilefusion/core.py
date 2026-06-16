@@ -922,9 +922,7 @@ class TileFusion:
     # Fusion
     # -------------------------------------------------------------------------
 
-    def _fuse_tiles(
-        self, mode: str = "blended", chunked: bool = True, ram_fraction: float = 0.4
-    ) -> None:
+    def _fuse_tiles(self, mode: str = "blended", chunked: bool = True) -> None:
         """Fuse all tiles into output, looping over z-levels and time points."""
         total_planes = self.n_t * self.n_z
         plane_idx = 0
@@ -938,7 +936,7 @@ class TileFusion:
                 if mode == "direct":
                     self._fuse_tiles_direct_plane(z_level=z, time_idx=t)
                 elif chunked:
-                    self._fuse_tiles_chunked_plane(z_level=z, time_idx=t, ram_fraction=ram_fraction)
+                    self._fuse_tiles_chunked_plane(z_level=z, time_idx=t)
                 else:
                     self._fuse_tiles_full_plane(z_level=z, time_idx=t)
 
@@ -1059,30 +1057,21 @@ class TileFusion:
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
 
-    def _fuse_tiles_chunked_plane(
-        self, z_level: int = 0, time_idx: int = 0, ram_fraction: float = 0.4
-    ) -> None:
-        """Fuse tiles using memory-efficient chunked processing for a single z/t plane."""
-        import psutil
+    def _fuse_tiles_chunked_plane(self, z_level: int = 0, time_idx: int = 0) -> None:
+        """Fuse tiles block-by-block for a single z/t plane, at fixed low memory.
 
-        available_ram = psutil.virtual_memory().available
-        usable_ram = int(available_ram * ram_fraction)
-        # Per output pixel-channel the block loop holds: fused (f32=4) + weight
-        # (f32=4) + bool mask (1) + uint16 cast for the write (2) ~= 11 bytes.
-        # Round up to 12 for margin so ram_fraction is a real, safe ceiling.
-        bytes_per_pixel = 12 * self.channels
-        max_pixels = usable_ram // bytes_per_pixel
-        block_size = int(np.sqrt(max_pixels))
-        block_size = (block_size // self.chunk_y) * self.chunk_y
-        block_size = max(block_size, self.chunk_y * 2)
-        block_size = min(block_size, 10240)
+        The block size is fixed at one storage shard per side (``chunk_y * 2``),
+        independent of available RAM. The fusion scratchpad is therefore bounded
+        by construction: it never grows with the machine and never falls back to
+        a full-plane allocation, so peak memory at fusion time is the same small,
+        predictable amount on any computer and cannot blow up. Output is
+        identical regardless of block size (guarded by test_fuse_equivalence).
+        """
+        # One shard (2 codec chunks) per side. At 4 channels the per-block
+        # working set (fused f32 + weight f32 + uint16 write copy) is ~167 MB.
+        block_size = self.chunk_y * 2
 
         pad_Y, pad_X = self.padded_shape
-
-        if block_size >= max(pad_Y, pad_X):
-            if self.n_t == 1 and self.n_z == 1:
-                print(f"Image fits in RAM budget, using full mode")
-            return self._fuse_tiles_full_plane(z_level=z_level, time_idx=time_idx)
 
         show_progress = self.n_t == 1 and self.n_z == 1
         if show_progress:

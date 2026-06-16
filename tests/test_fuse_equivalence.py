@@ -77,8 +77,8 @@ def test_chunked_equals_full_plane(tmp_path):
 
     tf_chunk = TileFusion(chunk_dir, output_path=tmp_path / "chunk.zarr", blend_pixels=(0, 0))
     _prelude(tf_chunk)
-    # tiny ram_fraction -> block_size hits its floor (chunk_y*2 = 64) << image -> many blocks
-    tf_chunk._fuse_tiles_chunked_plane(ram_fraction=1e-9)
+    # block_size is fixed at chunk_y*2 = 64 (chunk_y overridden to 32 above) << image -> many blocks
+    tf_chunk._fuse_tiles_chunked_plane()
     chunk_out = _read_scale0(tf_chunk.output_path)
 
     np.testing.assert_array_equal(chunk_out, full_out)
