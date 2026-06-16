@@ -186,14 +186,20 @@ build → QC cycle (not "a bit more on the previous branch").
   Baseline result on `test_10x` (manual0): peak RSS ≈ 3.4 GB, mean ≈ 2.0 GB;
   `_fuse_tiles_chunked_plane` (~61%) + `numpy zeros_like` (~35%) ≈ 96% of
   integrated memory.
-- **Phase 2 (NON-INVASIVE, per decision):** Run B serialized registration
-  (`max_workers=1`) via wrapping the module-level `register_pair_worker` at
-  runtime (no `src/tilefusion/` edits) → `pairs.csv` (per-pair tile ids,
-  grid row/col, patch bytes, duration, allocated bytes), reconstructed
-  swimlanes, variability/CV across pairs, scan-pattern. Per-pair granularity
-  only; read/FFT/corr sub-step breakdown deferred (would require src hooks).
-  → QC.
-- **Phase 3:** report packaging (PDF / Notion assets). → QC.
+- **Phase 2 — DONE (merged to main 2026-06-15), NON-INVASIVE:** Run B
+  serialized registration (`max_workers=1`) via wrapping the module-level
+  `register_pair_worker` at runtime (no `src/tilefusion/` edits) → `pairs.csv`
+  (per-pair tile ids, grid row/col, patch bytes, duration) + a polished
+  **swimlanes** figure. Per-pair granularity only; read/FFT/corr sub-step
+  breakdown deferred. At QC, the per-pair **variability histogram** and the
+  **acquisition-pattern figure** were dropped as low-value/confusing for a
+  non-expert audience — **CV and scan-pattern are kept as printed metrics**
+  (and CV in `pairs.csv`), not figures. Result on `test_10x` (manual0): 43
+  pairs, raster, duration CV ≈ 0.06–0.08 (registration is uniform → no per-pair
+  inefficiency; the memory cost is in Fuse).
+- **Phase 3 — DROPPED (per user):** no PDF/report-assembly phase. Figures are
+  pasted manually into a Notion page (Before / After / Conclusion sections).
+  The tool instead **prints copy-pasteable metrics**; no narrative/discussion.
 - **Phase 4 — algorithm optimization:** reduce the memory footprint of the
   hotspots. Named targets (driven by Phase 1–3 data):
   1. **Fuse path** — reuse the per-plane buffer instead of re-allocating via
@@ -203,25 +209,28 @@ build → QC cycle (not "a bit more on the previous branch").
      data to find a **more optimal, still-safe cap** (higher cap → more pairs in
      flight → throughput; must stay below OOM with margin). Validate across runs.
   **Step 0 (mandatory): archive the COMPLETE pre-optimization output set** —
-  every figure + CSV from Phases 1–3, generated on the unoptimized code, as a
-  committed **baseline** (peak/mean averaged over several runs, since peak RSS
-  is noisy run-to-run). This is the fixed "before". Then optimize; each change
-  profiled before/after to prove the win. Once a change is proven, it is
+  every figure + CSV the tool produces (timeline, per-function, pareto,
+  swimlanes; timeline/functions/pairs CSVs), generated on the unoptimized code,
+  as a committed **baseline** (peak/mean averaged over several runs, since peak
+  RSS is noisy run-to-run). This is the fixed "before". Then optimize; each
+  change profiled before/after to prove the win. Once a change is proven, it is
   committed as the **new default** in `src/tilefusion/` (the optimization ships).
   → QC.
 - **Phase 5 — improvement conclusion (CTO deliverable):** regenerate the SAME
-  complete figure set (Phases 1–3) on the optimized code, then assemble the
-  conclusion:
-  - the **timeline overlaid** (two RSS lines: before vs after over time),
-  - the **swimlane** figure (registration per-pair),
-  - **metric bullets only**, no narrative: peak before vs after, mean before
-    vs after, **% improvement**.
-  Built from the archived baseline + post-optimization profile. → QC.
+  figure set on the optimized code (the "after"), then:
+  - a single **before/after timeline-overlay** figure (two RSS lines over time);
+  - the existing per-figure set (timeline, per-function, pareto, swimlanes) is
+    pasted manually into Notion under "Before" / "After";
+  - the tool **prints copy-pasteable metric bullets**, no narrative: peak before
+    vs after, mean before vs after, **% improvement**.
+  Built from the archived baseline + post-optimization profile. The only NEW
+  code Phase 5 needs is the overlay figure + the metrics print; everything else
+  is a re-run of the existing CLI. → QC.
 
-**Reproducibility constraint:** all Phase 1–3 figures are produced by the same
-`profiling` CLI, so the post-optimization regeneration is byte-format-identical
-to the baseline — the only differences are the data. This is what makes the
-before/after comparison apples-to-apples.
+**Reproducibility constraint:** all figures are produced by the same `profiling`
+CLI, so the post-optimization regeneration is byte-format-identical to the
+baseline — only the data differs. This is what makes the before/after
+comparison apples-to-apples.
 
 ## Success criteria
 
