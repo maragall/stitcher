@@ -215,3 +215,6 @@ CLAUDE.md
 
 # Brainstorming visual companion (local mockups)
 .superpowers/
+
+# Memory profiler output
+profile_out/
