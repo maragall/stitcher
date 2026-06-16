@@ -107,68 +107,43 @@ def plot_pareto(ranking, out_path, top_k=10):
     plt.close(fig)
 
 
-def plot_swimlanes(records, out_path, n_lanes=8, labels=None):
-    """Reconstructed registration concurrency: each pair a bar on a worker lane."""
+def plot_swimlanes(records, out_path, n_lanes=8):
+    """Reconstructed registration concurrency: each pair a bar on a worker lane.
+
+    Bars share one colour — colour carries no meaning here; the position
+    (row = worker, x = time, width = duration) is the information. A plain-language
+    key in the corner explains how to read it.
+    """
     placed = schedule_lanes(records, n_lanes=n_lanes)
+    total_s = max((p["end_ms"] for p in placed), default=0.0) / 1000.0
     fig, ax = plt.subplots(figsize=(9, 4.5))
     for p in placed:
         x = p["start_ms"] / 1000.0
         w = (p["end_ms"] - p["start_ms"]) / 1000.0
-        ax.barh(
-            p["lane"],
-            w,
-            left=x,
-            height=0.7,
-            color=_PALETTE[p["pair_id"] % len(_PALETTE)],
-            edgecolor="white",
-            linewidth=0.3,
-        )
+        ax.barh(p["lane"], w, left=x, height=0.7, color="#26a69a", edgecolor="white", linewidth=0.4)
     ax.set_xlabel("reconstructed time (s)")
     ax.set_ylabel("worker lane")
     ax.set_yticks(range(n_lanes))
-    ax.set_title(f"Registration pairs across {n_lanes} workers (reconstructed)")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
+    ax.set_title(f"Registration: {len(placed)} tile-pairs across {n_lanes} workers (reconstructed)")
 
-
-def plot_pair_variability(records, out_path):
-    """Per-pair duration distribution with mean and CV annotated."""
-    durations = [r.duration_ms for r in records]
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    if durations:
-        n = len(durations)
-        mean = sum(durations) / n
-        var = sum((d - mean) ** 2 for d in durations) / n
-        std = var**0.5
-        cv = (std / mean) if mean else 0.0
-        ax.hist(durations, bins=min(20, max(5, n // 3)), color="#26a69a", edgecolor="white")
-        ax.axvline(
-            mean, color="#263238", linestyle="--", linewidth=1.5, label=f"mean {mean:.1f} ms"
-        )
-        ax.set_title(f"Per-pair registration duration (CV = {cv:.2f})")
-        ax.legend(fontsize=8)
-    ax.set_xlabel("duration (ms)")
-    ax.set_ylabel("pairs")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
-def plot_scan_pattern(grid, out_path, pattern="unknown"):
-    """Scatter tiles at (col, row) and connect them in acquisition (index) order."""
-    items = sorted(grid.items())  # by tile index
-    cols = [c for _, (r, c) in items]
-    rows = [r for _, (r, c) in items]
-    fig, ax = plt.subplots(figsize=(7, 5))
-    ax.plot(cols, rows, color="#90a4ae", linewidth=1, zorder=1)
-    ax.scatter(cols, rows, c=range(len(items)), cmap="viridis", s=60, zorder=2)
-    for order, (idx, (r, c)) in enumerate(items):
-        ax.annotate(str(order), (c, r), fontsize=6, ha="center", va="center", color="white")
-    ax.set_xlabel("grid column")
-    ax.set_ylabel("grid row")
-    ax.invert_yaxis()  # row 0 at top
-    ax.set_title(f"Tile acquisition order — scan pattern: {pattern}")
+    key = (
+        "How to read this\n"
+        "• each bar = one tile-pair's registration\n"
+        "• row = which of the workers ran it\n"
+        "• bar width = that pair's compute time\n"
+        f"• total wall-clock ≈ {total_s:.1f} s"
+    )
+    ax.text(
+        0.985,
+        0.97,
+        key,
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=8,
+        color="#37474f",
+        bbox=dict(boxstyle="round", facecolor="#f5f7f8", edgecolor="#cfd8dc"),
+    )
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)

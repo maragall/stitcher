@@ -26,5 +26,5 @@ def test_schedule_lanes_packs_into_n_lanes_greedily():
 def test_plot_swimlanes_writes_file(tmp_path):
     records = [_rec(i, 5.0 + i) for i in range(6)]
     out = tmp_path / "swimlanes.png"
-    plot_swimlanes(records, str(out), n_lanes=3, labels={i: f"p{i}" for i in range(6)})
+    plot_swimlanes(records, str(out), n_lanes=3)
     assert out.exists() and out.stat().st_size > 0

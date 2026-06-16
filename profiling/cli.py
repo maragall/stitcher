@@ -14,8 +14,6 @@ from profiling.plots import (
     plot_function_lines,
     plot_pareto,
     plot_swimlanes,
-    plot_pair_variability,
-    plot_scan_pattern,
 )
 
 
@@ -76,8 +74,6 @@ def main(argv=None) -> int:
             pair.tile_identifiers,
         )
         plot_swimlanes(pair.records, os.path.join(args.out, "swimlanes.png"))
-        plot_pair_variability(pair.records, os.path.join(args.out, "variability.png"))
-        plot_scan_pattern(grid, os.path.join(args.out, "scan_pattern.png"), pattern=pattern)
 
         print(f"Per-pair: {stats['n_pairs']} pairs, scan pattern = {pattern}")
         if stats.get("duration_ms"):
