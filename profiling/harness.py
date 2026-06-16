@@ -1,13 +1,17 @@
 """Headless harness: wrap TileFusion stages, run pipeline, collect series."""
 
+import logging
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Callable, List, Optional
 
 from profiling.sampler import RSSSampler, Sample
 from profiling.attribution import AllocationSampler, AllocRecord
 from profiling.stages import Span, StageTimer
+
+logger = logging.getLogger(__name__)
 
 # (method_name, stage_label) for the four demarcatable stages inside run().
 _STAGE_METHODS = [
@@ -23,6 +27,7 @@ class ProfileResult:
     samples: List[Sample]
     alloc_records: List[AllocRecord]
     stage_spans: List[Span]
+    error: Optional[str] = None
 
 
 def _wrap_stage(obj, method_name: str, stage: str, timer: StageTimer) -> None:
@@ -34,6 +39,55 @@ def _wrap_stage(obj, method_name: str, stage: str, timer: StageTimer) -> None:
             return original(*args, **kwargs)
 
     setattr(obj, method_name, wrapped)
+
+
+def _safe_stop(sampler):
+    """Best-effort stop; never raises (so cleanup of other resources continues)."""
+    try:
+        return sampler.stop()
+    except Exception:  # pragma: no cover - cleanup must not mask the real error
+        logger.warning("sampler stop failed", exc_info=True)
+        return []
+
+
+def _collect(
+    run_callable: Callable[[], None],
+    t0: float,
+    timer: StageTimer,
+    rss_interval: float = 0.05,
+    alloc_interval: float = 0.25,
+) -> ProfileResult:
+    """Run `run_callable` under RSS + allocation sampling.
+
+    Guarantees tracemalloc is stopped and both sampler threads are joined,
+    and returns whatever was collected even if `run_callable` raises (the
+    traceback is captured in ProfileResult.error).
+    """
+    rss = RSSSampler(t0, rss_interval)
+    alloc = AllocationSampler(t0, alloc_interval)
+    samples: List[Sample] = []
+    records: List[AllocRecord] = []
+    error: Optional[str] = None
+
+    alloc.start_tracing()
+    try:
+        rss.start()
+        alloc.start()
+        try:
+            run_callable()
+        except Exception:
+            error = traceback.format_exc()
+            logger.warning("profiled run raised:\n%s", error)
+        finally:
+            samples = _safe_stop(rss)
+            records = _safe_stop(alloc)
+    finally:
+        import tracemalloc
+
+        if tracemalloc.is_tracing():
+            tracemalloc.stop()
+
+    return ProfileResult(samples, records, timer.spans, error)
 
 
 def profile_dataset(
@@ -51,22 +105,10 @@ def profile_dataset(
 
     # Force the Register stage to actually run (don't load cached metrics).
     metrics_path = Path(dataset).parent / metrics_name
-    if metrics_path.exists():
-        metrics_path.unlink()
+    metrics_path.unlink(missing_ok=True)
 
     timer = StageTimer(t0)
     for method_name, stage in _STAGE_METHODS:
         _wrap_stage(tf, method_name, stage, timer)
 
-    rss = RSSSampler(t0, rss_interval)
-    alloc = AllocationSampler(t0, alloc_interval)
-    alloc.start_tracing()
-    rss.start()
-    alloc.start()
-    try:
-        tf.run()
-    finally:
-        samples = rss.stop()
-        records = alloc.stop()
-
-    return ProfileResult(samples, records, timer.spans)
+    return _collect(tf.run, t0, timer, rss_interval, alloc_interval)
