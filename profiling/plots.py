@@ -12,45 +12,37 @@ _PALETTE = ["#1565c0", "#26a69a", "#5c6bc0", "#c9a227", "#a1707f", "#78909c"]
 
 
 def _draw_stage_boundaries(ax, spans, min_duration_frac=0.02):
-    """Dashed vertical at each meaningful span end; stage name rotated -90 at top.
+    """Dashed verticals at stage boundaries; stage name centered over its region.
 
-    Stages whose duration is below `min_duration_frac` of the total profiled
-    time are omitted: a near-instant stage's boundary coincides with its
-    neighbour's and would read as a single line. (Such stages are still
-    recorded in the timeline CSV.) Any remaining boundaries that still fall
-    close together are stacked downward so their labels don't overlap.
+    Each stage's label is drawn at the MIDPOINT of its span (not its edge) so it
+    sits over the region it names — a label at the edge is easily misread as
+    belonging to the neighbouring region. Stages whose duration is below
+    `min_duration_frac` of the total profiled time are omitted: a near-instant
+    stage's boundary coincides with its neighbour's and would read as a single
+    line. (Such stages are still recorded in the timeline CSV.)
     """
     if not spans:
         return
     ymin, ymax = ax.get_ylim()
     yrange = ymax - ymin
-    xmin, xmax = ax.get_xlim()
 
     total_ms = max(e for _, _, e in spans) - min(s for _, s, _ in spans)
     min_dur = min_duration_frac * total_ms if total_ms > 0 else 0.0
     kept = [(n, s, e) for (n, s, e) in spans if (e - s) >= min_dur]
 
-    min_gap = 0.04 * (xmax - xmin)  # boundaries closer than this share a label column
-    last_x = None
-    tier = 0
-    for name, _start, end in kept:
-        x = end / 1000.0
-        ax.axvline(x, color="#90a4ae", linestyle="--", linewidth=1)
-        if last_x is not None and (x - last_x) < min_gap:
-            tier += 1
-        else:
-            tier = 0
+    for name, start, end in kept:
+        ax.axvline(end / 1000.0, color="#90a4ae", linestyle="--", linewidth=1)
+        midpoint = (start + end) / 2.0 / 1000.0
         ax.text(
-            x,
-            ymax - tier * 0.16 * yrange,
+            midpoint,
+            ymax - 0.02 * yrange,
             name,
             rotation=-90,
             va="top",
-            ha="right",
+            ha="center",
             fontsize=8,
-            color="#37474f",
+            color="#607d8b",
         )
-        last_x = x
 
 
 def plot_timeline(samples, spans, out_path):
