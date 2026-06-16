@@ -4,10 +4,19 @@ import argparse
 import os
 import sys
 
-from profiling.harness import profile_dataset
+from profiling.harness import profile_dataset, profile_registration_perpair
 from profiling.ranking import compute_ranking
-from profiling.record import write_timeline_csv, write_functions_csv
-from profiling.plots import plot_timeline, plot_function_lines, plot_pareto
+from profiling.tiles import build_grid, infer_scan_pattern
+from profiling.variability import compute_pair_stats
+from profiling.record import write_timeline_csv, write_functions_csv, write_pairs_csv
+from profiling.plots import (
+    plot_timeline,
+    plot_function_lines,
+    plot_pareto,
+    plot_swimlanes,
+    plot_pair_variability,
+    plot_scan_pattern,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -16,6 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", default="profile_out", help="Output directory")
     p.add_argument("--region", default="manual0", help="Region to profile")
     p.add_argument("--top-k", type=int, default=5, help="Functions to plot as lines")
+    p.add_argument(
+        "--perpair",
+        action="store_true",
+        help="Also run serialized per-pair registration analysis (Phase 2)",
+    )
     return p
 
 
@@ -47,6 +61,28 @@ def main(argv=None) -> int:
     if ranking:
         top2 = sum(r["pct_of_total"] for r in ranking[:2])
         print(f"Top 2 functions explain {top2:.1f}% of integrated memory.")
+
+    if args.perpair:
+        pair = profile_registration_perpair(args.dataset, region=args.region)
+        grid = build_grid(pair.tile_positions)
+        sequence = [grid[idx] for idx in range(len(pair.tile_positions))]
+        pattern = infer_scan_pattern(sequence)
+        stats = compute_pair_stats(pair.records)
+
+        write_pairs_csv(
+            os.path.join(args.out, "pairs.csv"),
+            pair.records,
+            grid,
+            pair.tile_identifiers,
+        )
+        plot_swimlanes(pair.records, os.path.join(args.out, "swimlanes.png"))
+        plot_pair_variability(pair.records, os.path.join(args.out, "variability.png"))
+        plot_scan_pattern(grid, os.path.join(args.out, "scan_pattern.png"), pattern=pattern)
+
+        print(f"Per-pair: {stats['n_pairs']} pairs, scan pattern = {pattern}")
+        if stats.get("duration_ms"):
+            print(f"Per-pair duration CV = {stats['duration_ms']['cv']:.2f}")
+
     return 0
 
 
