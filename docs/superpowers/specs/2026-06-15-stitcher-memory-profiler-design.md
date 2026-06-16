@@ -186,19 +186,35 @@ build → QC cycle (not "a bit more on the previous branch").
   Baseline result on `test_10x` (manual0): peak RSS ≈ 3.4 GB, mean ≈ 2.0 GB;
   `_fuse_tiles_chunked_plane` (~61%) + `numpy zeros_like` (~35%) ≈ 96% of
   integrated memory.
-- **Phase 2:** Run B → `pairs.csv`, swimlanes, variability/CV, scan-pattern. → QC.
+- **Phase 2 (NON-INVASIVE, per decision):** Run B serialized registration
+  (`max_workers=1`) via wrapping the module-level `register_pair_worker` at
+  runtime (no `src/tilefusion/` edits) → `pairs.csv` (per-pair tile ids,
+  grid row/col, patch bytes, duration, allocated bytes), reconstructed
+  swimlanes, variability/CV across pairs, scan-pattern. Per-pair granularity
+  only; read/FFT/corr sub-step breakdown deferred (would require src hooks).
+  → QC.
 - **Phase 3:** report packaging (PDF / Notion assets). → QC.
 - **Phase 4 — algorithm optimization:** reduce the memory footprint of the
-  hotspots identified above (start with the fuse path: reuse the per-plane
-  buffer instead of re-allocating via `zeros_like`; tune the registration
-  batching cap). BEFORE the first change, archive a committed **baseline**
-  (timeline CSV + peak/mean over several runs, since peak RSS is noisy
-  run-to-run) so "before" is a fixed reference. Each optimization is profiled
-  before/after to prove the win. → QC.
-- **Phase 5 — improvement conclusion (CTO deliverable):** one figure — the
-  timeline with TWO RSS lines (before vs after) — plus metric bullets only
-  (no narrative): peak before vs after, mean before vs after, **% improvement**.
+  hotspots (start with the fuse path: reuse the per-plane buffer instead of
+  re-allocating via `zeros_like`; tune the registration batching cap).
+  **Step 0 (mandatory): archive the COMPLETE pre-optimization output set** —
+  every figure + CSV from Phases 1–3, generated on the unoptimized code, as a
+  committed **baseline** (peak/mean averaged over several runs, since peak RSS
+  is noisy run-to-run). This is the fixed "before". Then optimize; each change
+  profiled before/after to prove the win. → QC.
+- **Phase 5 — improvement conclusion (CTO deliverable):** regenerate the SAME
+  complete figure set (Phases 1–3) on the optimized code, then assemble the
+  conclusion:
+  - the **timeline overlaid** (two RSS lines: before vs after over time),
+  - the **swimlane** figure (registration per-pair),
+  - **metric bullets only**, no narrative: peak before vs after, mean before
+    vs after, **% improvement**.
   Built from the archived baseline + post-optimization profile. → QC.
+
+**Reproducibility constraint:** all Phase 1–3 figures are produced by the same
+`profiling` CLI, so the post-optimization regeneration is byte-format-identical
+to the baseline — the only differences are the data. This is what makes the
+before/after comparison apples-to-apples.
 
 ## Success criteria
 
