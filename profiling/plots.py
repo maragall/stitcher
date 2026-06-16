@@ -12,13 +12,27 @@ _PALETTE = ["#1565c0", "#26a69a", "#5c6bc0", "#c9a227", "#a1707f", "#78909c"]
 
 
 def _draw_stage_boundaries(ax, spans):
-    """Dashed vertical at each span end; stage name rotated -90 at the top."""
-    ymax = ax.get_ylim()[1]
+    """Dashed vertical at each span end; stage name rotated -90 at the top.
+
+    Labels for boundaries that fall close together in time (e.g. a near-zero
+    duration stage) are stacked downward so they don't overlap.
+    """
+    ymin, ymax = ax.get_ylim()
+    yrange = ymax - ymin
+    xmin, xmax = ax.get_xlim()
+    min_gap = 0.04 * (xmax - xmin)  # boundaries closer than this share a label column
+    last_x = None
+    tier = 0
     for name, _start, end in spans:
-        ax.axvline(end / 1000.0, color="#90a4ae", linestyle="--", linewidth=1)
+        x = end / 1000.0
+        ax.axvline(x, color="#90a4ae", linestyle="--", linewidth=1)
+        if last_x is not None and (x - last_x) < min_gap:
+            tier += 1
+        else:
+            tier = 0
         ax.text(
-            end / 1000.0,
-            ymax,
+            x,
+            ymax - tier * 0.16 * yrange,
             name,
             rotation=-90,
             va="top",
@@ -26,6 +40,7 @@ def _draw_stage_boundaries(ax, spans):
             fontsize=8,
             color="#37474f",
         )
+        last_x = x
 
 
 def plot_timeline(samples, spans, out_path):
