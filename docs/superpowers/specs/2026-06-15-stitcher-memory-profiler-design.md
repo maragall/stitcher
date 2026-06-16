@@ -200,14 +200,16 @@ build → QC cycle (not "a bit more on the previous branch").
 - **Phase 3 — DROPPED (per user):** no PDF/report-assembly phase. Figures are
   pasted manually into a Notion page (Before / After / Conclusion sections).
   The tool instead **prints copy-pasteable metrics**; no narrative/discussion.
-- **Phase 4 — algorithm optimization:** reduce the memory footprint of the
-  hotspots. Named targets (driven by Phase 1–3 data):
-  1. **Fuse path** — reuse the per-plane buffer instead of re-allocating via
-     `zeros_like` each plane (the ~35% `zeros_like` contributor).
-  2. **Registration RAM cap** — `_register_parallel` currently batches at
-     `available_RAM * 0.30`. Use the captured peak-RSS / available-RAM / per-pair
-     data to find a **more optimal, still-safe cap** (higher cap → more pairs in
-     flight → throughput; must stay below OOM with margin). Validate across runs.
+- **Phase 4 — algorithm optimization — DONE (fuse path).** Optimized
+  `_fuse_tiles_chunked_plane` (output byte-identical, guarded by
+  `tests/test_fuse_equivalence.py`): reuse block buffers across blocks +
+  in-place masked divide + honest `bytes_per_pixel` (safe `ram_fraction` cap).
+  **Result on `test_10x` (manual0): peak RSS ~3971 MB → ~2527 MB (≈36% lower),
+  mean ~2225 → ~1842 MB (≈17%); run also ~20% faster.** See
+  `docs/superpowers/baselines/post-opt/conclusion.md`.
+  - **Registration RAM cap (deferred):** `_register_parallel` batches at
+    `available_RAM * 0.30`. A throughput tweak (not memory); left as a separate
+    follow-up so it doesn't muddy the memory before/after.
   **Step 0 (mandatory): archive the COMPLETE pre-optimization output set** —
   every figure + CSV the tool produces (timeline, per-function, pareto,
   swimlanes; timeline/functions/pairs CSVs), generated on the unoptimized code,
