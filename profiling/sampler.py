@@ -1,4 +1,5 @@
 """Background thread sampling process RSS via psutil."""
+
 import threading
 import time
 from typing import List, NamedTuple
