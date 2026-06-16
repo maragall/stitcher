@@ -10,6 +10,7 @@ from typing import Callable, List, Optional
 from profiling.sampler import RSSSampler, Sample
 from profiling.attribution import AllocationSampler, AllocRecord
 from profiling.stages import Span, StageTimer
+from profiling.perpair import PairRecord, PairRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -112,3 +113,36 @@ def profile_dataset(
         _wrap_stage(tf, method_name, stage, timer)
 
     return _collect(tf.run, t0, timer, rss_interval, alloc_interval)
+
+
+@dataclass
+class PairProfileResult:
+    records: List[PairRecord]
+    tile_positions: List
+    tile_identifiers: List
+    tile_shape: tuple
+
+
+def profile_registration_perpair(dataset: str, region: str = "manual0") -> PairProfileResult:
+    """Run B: serialized registration with per-pair recording (non-invasive)."""
+    from tilefusion import TileFusion
+
+    metrics_name = f"profile_perpair_metrics_{region}.json"
+    tf = TileFusion(dataset, region=region, metrics_filename=metrics_name, max_workers=1)
+
+    metrics_path = Path(dataset).parent / metrics_name
+    metrics_path.unlink(missing_ok=True)
+
+    with PairRecorder() as rec:
+        tf.refine_tile_positions_with_cross_correlation(
+            downsample_factors=tf.downsample_factors,
+            ch_idx=tf.channel_to_use,
+            threshold=tf.threshold,
+        )
+
+    return PairProfileResult(
+        records=list(rec.records),
+        tile_positions=list(tf._tile_positions),
+        tile_identifiers=list(tf._tile_identifiers),
+        tile_shape=(tf.Y, tf.X),
+    )
