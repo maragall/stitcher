@@ -1067,7 +1067,10 @@ class TileFusion:
 
         available_ram = psutil.virtual_memory().available
         usable_ram = int(available_ram * ram_fraction)
-        bytes_per_pixel = 4 * 2 * self.channels
+        # Per output pixel-channel the block loop holds: fused (f32=4) + weight
+        # (f32=4) + bool mask (1) + uint16 cast for the write (2) ~= 11 bytes.
+        # Round up to 12 for margin so ram_fraction is a real, safe ceiling.
+        bytes_per_pixel = 12 * self.channels
         max_pixels = usable_ram // bytes_per_pixel
         block_size = int(np.sqrt(max_pixels))
         block_size = (block_size // self.chunk_y) * self.chunk_y
@@ -1096,6 +1099,13 @@ class TileFusion:
         total_blocks = n_blocks_y * n_blocks_x
         C = self.channels
 
+        # Reusable per-block accumulators (sized to the largest block); zeroed
+        # and sub-viewed per block instead of re-allocated each iteration.
+        max_bh = min(block_size, pad_Y)
+        max_bw = min(block_size, pad_X)
+        fused_buf = np.zeros((C, max_bh, max_bw), dtype=np.float32)
+        weight_buf = np.zeros((C, max_bh, max_bw), dtype=np.float32)
+
         block_idx = 0
         for block_y in range(0, pad_Y, block_size):
             for block_x in range(0, pad_X, block_size):
@@ -1112,8 +1122,10 @@ class TileFusion:
                 if not overlapping:
                     continue
 
-                fused_block = np.zeros((C, bh, bw), dtype=np.float32)
-                weight_sum = np.zeros_like(fused_block)
+                fused_block = fused_buf[:, :bh, :bw]
+                weight_sum = weight_buf[:, :bh, :bw]
+                fused_block[...] = 0.0
+                weight_sum[...] = 0.0
 
                 desc = f"block {block_idx}/{total_blocks}"
                 iterator = (
@@ -1145,16 +1157,17 @@ class TileFusion:
                         fused_block[c, oy0:oy1, ox0:ox1] += tile_all[c, sy0:sy1, sx0:sx1] * w2d
                         weight_sum[c, oy0:oy1, ox0:ox1] += w2d
 
+                # In-place masked divide avoids the large fancy-index temporaries
+                # that `fused_block[mask] /= weight_sum[mask]` would allocate.
                 mask = weight_sum > 0
-                fused_block[mask] /= weight_sum[mask]
+                np.divide(fused_block, weight_sum, out=fused_block, where=mask)
 
                 # Write to 5D output: (T, C, Z, Y, X)
                 self.fused_ts[time_idx, :, z_level, block_y:by_end, block_x:bx_end].write(
                     fused_block.astype(np.uint16)
                 ).result()
 
-                del fused_block, weight_sum
-
+        del fused_buf, weight_buf
         gc.collect()
         if USING_GPU and cp is not None:
             cp.get_default_memory_pool().free_all_blocks()
