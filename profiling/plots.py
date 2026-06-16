@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 from profiling.sampler import Sample  # noqa: E402
 from profiling.stages import Span  # noqa: E402
+from profiling.swimlanes import schedule_lanes  # noqa: E402
 
 _PALETTE = ["#1565c0", "#26a69a", "#5c6bc0", "#c9a227", "#a1707f", "#78909c"]
 
@@ -101,6 +102,31 @@ def plot_pareto(ranking, out_path, top_k=10):
     ax2.set_ylabel("Cumulative %")
     ax2.set_ylim(0, 105)
     ax.set_title("Function ranking (Pareto)")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_swimlanes(records, out_path, n_lanes=8, labels=None):
+    """Reconstructed registration concurrency: each pair a bar on a worker lane."""
+    placed = schedule_lanes(records, n_lanes=n_lanes)
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    for p in placed:
+        x = p["start_ms"] / 1000.0
+        w = (p["end_ms"] - p["start_ms"]) / 1000.0
+        ax.barh(
+            p["lane"],
+            w,
+            left=x,
+            height=0.7,
+            color=_PALETTE[p["pair_id"] % len(_PALETTE)],
+            edgecolor="white",
+            linewidth=0.3,
+        )
+    ax.set_xlabel("reconstructed time (s)")
+    ax.set_ylabel("worker lane")
+    ax.set_yticks(range(n_lanes))
+    ax.set_title(f"Registration pairs across {n_lanes} workers (reconstructed)")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
