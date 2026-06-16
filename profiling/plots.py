@@ -53,7 +53,7 @@ def plot_function_lines(samples, records, ranking, out_path, top_k=5):
     # Bold total RSS line.
     t_s = [s.t_ms / 1000.0 for s in samples]
     rss = [s.rss_mb for s in samples]
-    ax.plot(t_s, rss, label="TOTAL RSS", color="#263238", linewidth=2.4)
+    ax.plot(t_s, rss, label="TOTAL RSS", color="#263238", linewidth=1.8)
     ax.set_xlabel("time (s)")
     ax.set_ylabel("Memory (MB)")
     ax.set_title("Per-function memory (top functions) + total")
