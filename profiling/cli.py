@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import sys
 
 from profiling.harness import profile_dataset
 from profiling.ranking import compute_ranking
@@ -38,6 +39,11 @@ def main(argv=None) -> int:
     plot_pareto(ranking, os.path.join(args.out, "pareto.png"))
 
     print(f"Wrote profile to {args.out}")
+    if result.error:
+        print(
+            f"WARNING: profiled run failed mid-pipeline; results are partial:\n{result.error}",
+            file=sys.stderr,
+        )
     if ranking:
         top2 = sum(r["pct_of_total"] for r in ranking[:2])
         print(f"Top 2 functions explain {top2:.1f}% of integrated memory.")

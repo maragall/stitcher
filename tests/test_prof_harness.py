@@ -2,7 +2,7 @@ import os
 import time
 import tracemalloc
 import pytest
-from profiling.harness import _wrap_stage, profile_dataset
+from profiling.harness import _wrap_stage, _collect, profile_dataset, ProfileResult
 from profiling.stages import StageTimer
 
 DATASET = os.path.expanduser(
@@ -31,10 +31,6 @@ def test_profile_dataset_smoke(tmp_path):
     assert len(result.samples) > 0
     assert len(result.stage_spans) >= 1
     assert any(s[0] == "Register" for s in result.stage_spans)
-
-
-import tracemalloc
-from profiling.harness import _collect, ProfileResult
 
 
 def test_collect_returns_partial_result_and_cleans_up_on_error():
