@@ -21,9 +21,14 @@ def build_grid(
 
 
 def tile_label(identifiers: List[Tuple], grid: Dict[int, Tuple[int, int]], idx: int) -> str:
-    """Human label like "manual0/fov1@(r0,c1)" (falls back to index if no id)."""
+    """Human label like "manual0/fov1@(r0,c1)" (falls back to index if no id).
+
+    Only the 2-element ``(region, fov)`` identifier form is rendered as
+    region/fov; any other shape (empty list, or 1-element ids from simple
+    directory layouts) falls back to the tile-index label.
+    """
     r, c = grid[idx]
-    if identifiers and idx < len(identifiers):
+    if identifiers and idx < len(identifiers) and len(identifiers[idx]) == 2:
         region, fov = identifiers[idx]
         return f"{region}/fov{fov}@(r{r},c{c})"
     return f"tile{idx}@(r{r},c{c})"

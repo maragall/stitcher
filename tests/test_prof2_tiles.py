@@ -1,6 +1,14 @@
 from profiling.tiles import build_grid, tile_label, infer_scan_pattern
 
 
+def test_tile_label_falls_back_for_non_pair_identifiers():
+    grid = {0: (0, 0), 1: (0, 1)}
+    # 1-element identifiers (simple directory layouts) must not crash
+    assert tile_label([(7,), (8,)], grid, 1) == "tile1@(r0,c1)"
+    # empty identifiers fall back too
+    assert tile_label([], grid, 0) == "tile0@(r0,c0)"
+
+
 def test_build_grid_assigns_row_col():
     # 2 rows x 3 cols raster; positions are (y_um, x_um)
     positions = [

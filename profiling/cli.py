@@ -20,7 +20,7 @@ from profiling.plots import (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Profile TileFusion memory footprint (Phase 1).")
+    p = argparse.ArgumentParser(description="Profile TileFusion memory footprint.")
     p.add_argument("dataset", help="Path to the dataset folder")
     p.add_argument("--out", default="profile_out", help="Output directory")
     p.add_argument("--region", default="manual0", help="Region to profile")

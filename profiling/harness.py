@@ -140,6 +140,13 @@ def profile_registration_perpair(dataset: str, region: str = "manual0") -> PairP
             threshold=tf.threshold,
         )
 
+    if not rec.records:
+        logger.warning(
+            "No pairs recorded — registration likely took the sequential path "
+            "(e.g. a single-file OME-TIFF). Per-pair analysis requires a "
+            "multi-file format that uses the parallel registration path."
+        )
+
     return PairProfileResult(
         records=list(rec.records),
         tile_positions=list(tf._tile_positions),
