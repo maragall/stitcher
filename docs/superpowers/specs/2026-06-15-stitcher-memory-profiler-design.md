@@ -195,13 +195,20 @@ build → QC cycle (not "a bit more on the previous branch").
   → QC.
 - **Phase 3:** report packaging (PDF / Notion assets). → QC.
 - **Phase 4 — algorithm optimization:** reduce the memory footprint of the
-  hotspots (start with the fuse path: reuse the per-plane buffer instead of
-  re-allocating via `zeros_like`; tune the registration batching cap).
+  hotspots. Named targets (driven by Phase 1–3 data):
+  1. **Fuse path** — reuse the per-plane buffer instead of re-allocating via
+     `zeros_like` each plane (the ~35% `zeros_like` contributor).
+  2. **Registration RAM cap** — `_register_parallel` currently batches at
+     `available_RAM * 0.30`. Use the captured peak-RSS / available-RAM / per-pair
+     data to find a **more optimal, still-safe cap** (higher cap → more pairs in
+     flight → throughput; must stay below OOM with margin). Validate across runs.
   **Step 0 (mandatory): archive the COMPLETE pre-optimization output set** —
   every figure + CSV from Phases 1–3, generated on the unoptimized code, as a
   committed **baseline** (peak/mean averaged over several runs, since peak RSS
   is noisy run-to-run). This is the fixed "before". Then optimize; each change
-  profiled before/after to prove the win. → QC.
+  profiled before/after to prove the win. Once a change is proven, it is
+  committed as the **new default** in `src/tilefusion/` (the optimization ships).
+  → QC.
 - **Phase 5 — improvement conclusion (CTO deliverable):** regenerate the SAME
   complete figure set (Phases 1–3) on the optimized code, then assemble the
   conclusion:
