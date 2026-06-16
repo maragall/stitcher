@@ -177,13 +177,28 @@ order recorded to infer scan pattern.
 
 ## Phasing & QC
 
-QC review after each phase (per user).
+QC review after each phase (per user). Each phase is its own branch → plan →
+build → QC cycle (not "a bit more on the previous branch").
 
-- **Phase 1:** harness + Run A → timeline figure, per-function overlaid lines,
-  Pareto ranking, `functions.csv`. Answers "monitor memory, find expensive
-  functions." → QC.
+- **Phase 1 — DONE (merged to main 2026-06-15):** harness + Run A → timeline
+  figure, per-function overlaid lines, Pareto ranking, `functions.csv`.
+  Answers "monitor memory, find expensive functions."
+  Baseline result on `test_10x` (manual0): peak RSS ≈ 3.4 GB, mean ≈ 2.0 GB;
+  `_fuse_tiles_chunked_plane` (~61%) + `numpy zeros_like` (~35%) ≈ 96% of
+  integrated memory.
 - **Phase 2:** Run B → `pairs.csv`, swimlanes, variability/CV, scan-pattern. → QC.
 - **Phase 3:** report packaging (PDF / Notion assets). → QC.
+- **Phase 4 — algorithm optimization:** reduce the memory footprint of the
+  hotspots identified above (start with the fuse path: reuse the per-plane
+  buffer instead of re-allocating via `zeros_like`; tune the registration
+  batching cap). BEFORE the first change, archive a committed **baseline**
+  (timeline CSV + peak/mean over several runs, since peak RSS is noisy
+  run-to-run) so "before" is a fixed reference. Each optimization is profiled
+  before/after to prove the win. → QC.
+- **Phase 5 — improvement conclusion (CTO deliverable):** one figure — the
+  timeline with TWO RSS lines (before vs after) — plus metric bullets only
+  (no narrative): peak before vs after, mean before vs after, **% improvement**.
+  Built from the archived baseline + post-optimization profile. → QC.
 
 ## Success criteria
 
