@@ -22,8 +22,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-# Muted red -> amber -> green: reads as "worse -> better" for a non-technical audience.
-PALETTE = ["#C44E52", "#DD8452", "#55A868", "#4C72B0", "#8172B3", "#937860"]
+# Distinct hues (red / blue / green primaries) so overlapping curves stay legible;
+# before=red (worst), last=green (best). Extra colors for >3 series.
+PALETTE = ["#D62728", "#1F77B4", "#2CA02C", "#9467BD", "#FF7F0E", "#17BECF"]
 
 
 def _read_timeline(path):
