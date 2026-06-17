@@ -2378,27 +2378,57 @@ def dtype_range(dtype):
     return [0, 65535]
 
 
+class _TSArray:
+    """Minimal lazy array view over a tensorstore handle, for dask.from_array.
+
+    Exposes shape/dtype/ndim and returns numpy only for the slice dask requests,
+    so napari pages chunks on demand instead of reading whole volumes.
+    """
+
+    def __init__(self, store):
+        self._store = store
+        self.shape = tuple(store.shape)
+        self.dtype = store.dtype.numpy_dtype
+        self.ndim = len(self.shape)
+
+    def __getitem__(self, idx):
+        return np.asarray(self._store[idx].read().result())
+
+
 def _add_fused_zarr(viewer, zarr_path, channel_names, log):
     """Add a fused OME-Zarr as lazy, multiscale, per-channel layers.
 
-    napari reads only the chunk/level it renders, so RAM stays flat regardless of
-    dataset size — no full-volume read into numpy. Mirrors scripts/view_in_napari.py.
+    Opens scale*/image with tensorstore (the same engine that wrote the store, so
+    it always reads our Zarr v3 output) and wraps each level in a dask array.
+    napari pages only the chunk/level it renders, so RAM stays flat regardless of
+    dataset size — no full-volume read into numpy, no ome-zarr version dependency.
     """
-    from ome_zarr.io import parse_url
-    from ome_zarr.reader import Reader
+    import tensorstore as ts
+    import dask.array as da
 
-    nodes = list(Reader(parse_url(str(zarr_path)))())
-    if not nodes or not nodes[0].data:
-        log("No image data found in output")
+    levels = []
+    for scale_dir in sorted(Path(zarr_path).glob("scale*")):
+        image_path = scale_dir / "image"
+        if image_path.exists():
+            store = ts.open(
+                {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(image_path)}}
+            ).result()
+            shp = tuple(store.shape)
+            # Chunk Y/X by one codec chunk, 1 elsewhere — lazy, storage-aligned reads.
+            chunks = tuple([1] * (len(shp) - 2)) + (min(1024, shp[-2]), min(1024, shp[-1]))
+            levels.append(da.from_array(_TSArray(store), chunks=chunks))
+
+    if not levels:
+        log(f"No scale*/image data found in {zarr_path}")
         return
-    data = nodes[0].data  # list of lazy dask arrays, one per scale level
-    shape = data[0].shape  # (T, C, Z, Y, X) or (T, C, Y, X)
+
+    shape = levels[0].shape  # (T, C, Z, Y, X) or (T, C, Y, X)
     is_5d = len(shape) == 5
     n_channels = shape[1] if len(shape) >= 4 else 1
     colors = ["blue", "green", "yellow", "red", "magenta", "cyan"]
 
     for c in range(n_channels):
-        pyramid = [lvl[:, c] for lvl in data]  # lazy slice -> (T, Z, Y, X) per level
+        pyramid = [lvl[:, c] for lvl in levels]  # lazy slice -> (T, Z, Y, X) per level
         sample = pyramid[-1][pyramid[-1].shape[0] // 2]  # smallest level, middle T
         if is_5d:
             sample = sample[sample.shape[0] // 2]  # middle Z -> single (Y, X) plane
