@@ -5,6 +5,7 @@ Stitcher GUI - A simple interface for tile fusion of OME-TIFF files.
 
 import sys
 import os
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -333,7 +334,6 @@ class PreviewWorker(QThread):
             self.finished.emit(color_before, color_after, fused)
 
         except Exception as e:
-            import traceback
 
             self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
 
@@ -748,7 +748,6 @@ class FusionWorker(QThread):
             self.finished.emit(str(output_path), elapsed_time)
 
         except Exception as e:
-            import traceback
 
             self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
 
@@ -788,7 +787,6 @@ class BatchFusionWorker(QThread):
         try:
             self._run_batch()
         except Exception as e:
-            import traceback
 
             self.error.emit(f"Batch processing failed: {e}\n{traceback.format_exc()}")
             self.finished.emit(0, len(self.paths), 0.0)
@@ -827,7 +825,6 @@ class BatchFusionWorker(QThread):
                 self.item_finished.emit(idx, total)
                 break
             except Exception as e:
-                import traceback
 
                 failed += 1
                 self._log(idx, total, name, f"FAILED: {e}")
@@ -1100,7 +1097,6 @@ class FlatfieldWorker(QThread):
             self.finished.emit(flatfield, darkfield)
 
         except Exception as e:
-            import traceback
 
             self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
 
@@ -2188,7 +2184,7 @@ class StitcherGUI(QMainWindow):
                 viewer.add_image(fused, name="Fused result", colormap="gray", visible=False)
             napari.run()
         except Exception as e:
-            self.log(f"Error opening Napari: {e}")
+            self.log(f"Error opening Napari: {e}\n{traceback.format_exc()}")
 
     def on_preview_error(self, error_msg):
         self.progress_bar.setVisible(False)
@@ -2228,7 +2224,7 @@ class StitcherGUI(QMainWindow):
                 napari.Viewer()
                 napari.run()
             except Exception as e:
-                self.log(f"Error opening Napari: {e}")
+                self.log(f"Error opening Napari: {e}\n{traceback.format_exc()}")
             return
 
         # Determine the actual zarr path to open
@@ -2247,7 +2243,7 @@ class StitcherGUI(QMainWindow):
             _add_fused_zarr(viewer, zarr_path, self._fused_channel_names(), self.log)
             napari.run()
         except Exception as e:
-            self.log(f"Error opening Napari: {e}")
+            self.log(f"Error opening Napari: {e}\n{traceback.format_exc()}")
 
     def compute_mip(self):
         """Compute and display max intensity projection in Napari."""
@@ -2301,7 +2297,7 @@ class StitcherGUI(QMainWindow):
                 del mip
             napari.run()
         except Exception as e:
-            self.log(f"Error computing MIP: {e}")
+            self.log(f"Error computing MIP: {e}\n{traceback.format_exc()}")
 
     def open_existing_in_napari(self):
         """Load a previously stitched output so Napari/MIP buttons work."""

@@ -507,6 +507,11 @@ class TileFusion:
         if self._flatfield is not None:
             tile = apply_flatfield(tile, self._flatfield, self._darkfield)
 
+        # Every fusion path expects C channels; broadcast a single-channel read up
+        # so the placement/blend code never has to special-case channel count.
+        if tile.shape[0] == 1 and self.channels > 1:
+            tile = np.broadcast_to(tile, (self.channels, tile.shape[1], tile.shape[2]))
+
         return tile
 
     def _read_tile_region(
@@ -954,69 +959,36 @@ class TileFusion:
                     self._fuse_tiles_full_plane(z_level=z, time_idx=t)
 
     def _fuse_tiles_direct_plane(self, z_level: int = 0, time_idx: int = 0) -> None:
-        """Fuse tiles using direct placement for a single z/t plane."""
-        import psutil
+        """Place tiles directly (no blending) for a single z/t plane.
 
+        Each tile is streamed straight to the output store, so memory is bounded by
+        one tile regardless of plane size or machine RAM. Overlaps are overwritten
+        (last tile wins); use blended/chunked fusion for feathered seams.
+        """
         offsets = self._tile_pixel_origins()
         pad_Y, pad_X = self.padded_shape
-
-        available_ram = psutil.virtual_memory().available
-        output_bytes = pad_Y * pad_X * self.channels * 2
-        use_memory = output_bytes < 0.45 * available_ram
-
         show_progress = self.n_t == 1 and self.n_z == 1  # Only show progress for single plane
 
-        if use_memory:
-            if show_progress:
-                print(f"Direct mode: using in-memory buffer ({output_bytes / 1e9:.2f} GB)")
-            output = np.zeros((1, self.channels, 1, pad_Y, pad_X), dtype=np.uint16)
+        iterator = (
+            trange(len(offsets), desc="placing tiles", leave=True)
+            if show_progress
+            else range(len(offsets))
+        )
+        for t_idx in iterator:
+            oy, ox = offsets[t_idx]
+            tile_all = self._read_tile(t_idx, z_level=z_level, time_idx=time_idx)
 
-            iterator = (
-                trange(len(offsets), desc="placing tiles", leave=True)
-                if show_progress
-                else range(len(offsets))
-            )
-            for t_idx in iterator:
-                oy, ox = offsets[t_idx]
-                tile_all = self._read_tile(t_idx, z_level=z_level, time_idx=time_idx)
+            y_end = min(oy + self.Y, pad_Y)
+            x_end = min(ox + self.X, pad_X)
+            tile_h = y_end - oy
+            tile_w = x_end - ox
 
-                y_end = min(oy + self.Y, pad_Y)
-                x_end = min(ox + self.X, pad_X)
-                tile_h = y_end - oy
-                tile_w = x_end - ox
-
-                if tile_h > 0 and tile_w > 0:
-                    output[0, :, 0, oy:y_end, ox:x_end] = tile_all[:, :tile_h, :tile_w]
-
-            if show_progress:
-                print("Writing to disk...")
-            self.fused_ts[time_idx : time_idx + 1, :, z_level : z_level + 1, :, :].write(
-                output
-            ).result()
-            del output
-        else:
-            if show_progress:
-                print(f"Direct mode: writing directly to disk")
-            iterator = (
-                trange(len(offsets), desc="placing tiles", leave=True)
-                if show_progress
-                else range(len(offsets))
-            )
-            for t_idx in iterator:
-                oy, ox = offsets[t_idx]
-                tile_all = self._read_tile(t_idx, z_level=z_level, time_idx=time_idx)
-
-                y_end = min(oy + self.Y, pad_Y)
-                x_end = min(ox + self.X, pad_X)
-                tile_h = y_end - oy
-                tile_w = x_end - ox
-
-                if tile_h > 0 and tile_w > 0:
-                    tile_region = tile_all[:, :tile_h, :tile_w].astype(np.uint16)
-                    # Shape: (1, C, 1, h, w)
-                    self.fused_ts[
-                        time_idx : time_idx + 1, :, z_level : z_level + 1, oy:y_end, ox:x_end
-                    ].write(tile_region[np.newaxis, :, np.newaxis, :, :]).result()
+            if tile_h > 0 and tile_w > 0:
+                tile_region = tile_all[:, :tile_h, :tile_w].astype(np.uint16)
+                # Shape: (1, C, 1, h, w)
+                self.fused_ts[
+                    time_idx : time_idx + 1, :, z_level : z_level + 1, oy:y_end, ox:x_end
+                ].write(tile_region[np.newaxis, :, np.newaxis, :, :]).result()
 
         gc.collect()
 
@@ -1040,9 +1012,6 @@ class TileFusion:
         for t_idx in iterator:
             oy, ox = offsets[t_idx]
             tile_all = self._read_tile(t_idx, z_level=z_level, time_idx=time_idx)
-
-            if tile_all.shape[0] == 1 and C > 1:
-                tile_all = np.broadcast_to(tile_all, (C, tile_all.shape[1], tile_all.shape[2]))
 
             accumulate_tile_shard(fused_block, weight_sum, tile_all, w2d, oy, ox)
 
@@ -1122,23 +1091,22 @@ class TileFusion:
                 for t_idx in iterator:
                     tile_all = self._read_tile(t_idx, z_level=z_level, time_idx=time_idx)
 
-                    if tile_all.shape[0] == 1 and C > 1:
-                        tile_all = np.broadcast_to(
-                            tile_all, (C, tile_all.shape[1], tile_all.shape[2])
-                        )
+                    ty0, ty1, tx0, tx1 = tile_bounds[t_idx]  # this FOV's rectangle on the plane
 
-                    ty0, ty1, tx0, tx1 = tile_bounds[t_idx]
-
+                    # Intersection of FOV and block, expressed two ways:
+                    # destination box in BLOCK-local coords (where it lands in fused_block)...
                     oy0 = max(ty0, block_y) - block_y
                     oy1 = min(ty1, by_end) - block_y
                     ox0 = max(tx0, block_x) - block_x
                     ox1 = min(tx1, bx_end) - block_x
 
+                    # ...and the same region in FOV-local coords (which pixels of the FOV to read).
                     sy0 = max(block_y - ty0, 0)
                     sy1 = sy0 + (oy1 - oy0)
                     sx0 = max(block_x - tx0, 0)
                     sx1 = sx0 + (ox1 - ox0)
 
+                    # Feather weight for exactly this FOV-local sub-region (A1's window, sliced).
                     w2d = self.y_profile[sy0:sy1, None] * self.x_profile[None, sx0:sx1]
 
                     for c in range(C):
