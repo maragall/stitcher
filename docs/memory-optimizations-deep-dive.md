@@ -228,33 +228,38 @@ memory is flat regardless of dataset size, and the viewer no longer depends on o
 
 ---
 
-## Still RAM-shaped, and one duplication
+## Consistency fixes found during this review
 
-Three things this work did not touch:
+Reading the three paths side by side surfaced the same class of problem as §1 to §3: a fix
+applied to some paths but not others, a machine-dependent decision, and swallowed errors.
+Fixed in `[attach commit link]`:
 
-1. **Registration** still sizes its work from free RAM, the same pattern as §2. Next target.
+- **Single-channel broadcast was in two paths, missing in the third.** The full-plane and
+  chunked paths upgraded a 1-channel read to C channels; direct placement did not, so a
+  single-channel dataset would misbehave only in direct mode. Moved the broadcast into
+  `_read_tile`, so all three paths get it once instead of each repeating (or forgetting) it.
+- **Direct-placement mode had its own RAM switch.** `_fuse_tiles_direct_plane` loaded the whole
+  plane in memory when it fit in 45% of free RAM, the same machine-dependent pattern as §2.
+  Replaced with unconditional tile-by-tile streaming: bounded by one tile, machine-independent.
+  (Lower stakes than §2 was, since it was uint16 with a streaming fallback, but the same shape.)
+- **The viewer swallowed tracebacks.** The napari and MIP handlers caught exceptions and logged
+  only the message, which is why the §3 failure first appeared as a bare `'NoneType' object has
+  no attribute 'exists'`. They now log the full traceback.
+- **Mechanical de-duplication.** One `_tile_pixel_origins()` for the FOV-to-pixel math (was
+  copied in three paths), a shared `CHANNEL_COLORS`, a `CODEC_CHUNK` constant, and redundant
+  in-function imports removed.
 
-2. **Direct-placement mode** (`_fuse_tiles_direct_plane`, `core.py:943`) has its own RAM switch,
-   reached when fusion runs with blending off (`mode="direct"`, set when the GUI Blend checkbox
-   is unchecked):
-   ```python
-   available_ram = psutil.virtual_memory().available
-   output_bytes  = pad_Y * pad_X * self.channels * 2          # uint16 plane
-   use_memory    = output_bytes < 0.45 * available_ram
-   if use_memory:
-       output = np.zeros((1, self.channels, 1, pad_Y, pad_X), dtype=np.uint16)   # whole plane
-   ```
-   It is the same machine-dependent pattern as §2: the path taken depends on free RAM, and the
-   in-memory branch allocates the whole plane. It is much less dangerous than the §2 switch was,
-   because it is uint16 with no weight buffer (half the bytes, one array) and it falls back to a
-   tile-by-tile streaming write when the plane does not fit, so it cannot exceed 45% of RAM or
-   reproduce the crash. The fix is the §2 fix: delete the in-memory branch and the psutil check
-   and always stream (the streaming code already exists as the `else` branch at `core.py:998`),
-   making direct mode bounded and machine-independent.
+## Still RAM-shaped
 
-3. **Two implementations of the same blend.** The whole-plane path (`_fuse_tiles_full_plane`)
-   accumulates and normalizes with the numba kernels (`accumulate_tile_shard` / `normalize_shard`);
-   the chunked path does the same arithmetic inline in numpy. They agree (the equivalence test
-   passes), but no caller sets `chunked=False`, so `_fuse_tiles_full_plane` only runs as the
-   reference inside `test_fuse_equivalence`. That means the test's ground truth executes different
-   code from production, a correctness risk to watch, not a runtime memory trigger.
+Registration sizes its work from free RAM, the same pattern as §2. It is the starting point of
+the separate registration work, not this document.
+
+## Deferred: one blend, not two
+
+`_fuse_tiles_full_plane` blends with the numba kernels (`accumulate_tile_shard` /
+`normalize_shard`); the chunked path does the same arithmetic inline in numpy. They agree (the
+equivalence test passes), and `_fuse_tiles_full_plane` only runs as that test's reference, so
+this is not a runtime risk. Folding the chunked path onto the kernels is the right end state,
+deferred deliberately rather than left out: it is hot-path code, and the kernels would receive
+broadcast (stride-0) channel views, which needs its own correctness and timing check, not a
+close-out edit.
