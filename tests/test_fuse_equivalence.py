@@ -82,3 +82,30 @@ def test_chunked_equals_full_plane(tmp_path):
     chunk_out = _read_scale0(tf_chunk.output_path)
 
     np.testing.assert_array_equal(chunk_out, full_out)
+
+
+def test_direct_placement_streams_correctly(tmp_path):
+    # Direct mode = no blending: each FOV is placed (streamed) at its origin,
+    # overlaps overwritten (last FOV wins). Pins the streaming placement.
+    rng = np.random.default_rng(11)
+    ts_, ov = 200, 40
+    step = ts_ - ov
+    tiles = [rng.integers(100, 1000, size=(ts_, ts_), dtype=np.uint16) for _ in range(4)]
+    positions = [(0, 0), (0, step), (step, 0), (step, step)]
+
+    ddir = tmp_path / "direct_data"
+    _write_dataset(ddir, tiles, positions)
+
+    tf = TileFusion(ddir, output_path=tmp_path / "direct.zarr", blend_pixels=(0, 0))
+    _prelude(tf)
+    tf._fuse_tiles_direct_plane()
+    out = _read_scale0(tf.output_path)  # (T, C, Z, Y, X)
+
+    # Expected: place each FOV at its pixel origin in order, last writer wins.
+    pad_Y, pad_X = tf.padded_shape
+    expected = np.zeros((1, 1, 1, pad_Y, pad_X), dtype=np.uint16)
+    for (oy, ox), tile in zip(tf._tile_pixel_origins(), tiles):
+        y_end, x_end = min(oy + tf.Y, pad_Y), min(ox + tf.X, pad_X)
+        expected[0, 0, 0, oy:y_end, ox:x_end] = tile[: y_end - oy, : x_end - ox]
+
+    np.testing.assert_array_equal(out, expected)
