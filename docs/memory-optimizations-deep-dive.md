@@ -254,12 +254,15 @@ Fixed in `[attach commit link]`:
 Registration sizes its work from free RAM, the same pattern as §2. It is the starting point of
 the separate registration work, not this document.
 
-## Deferred: one blend, not two
+## Unified: one blend, not two
 
-`_fuse_tiles_full_plane` blends with the numba kernels (`accumulate_tile_shard` /
-`normalize_shard`); the chunked path does the same arithmetic inline in numpy. They agree (the
-equivalence test passes), and `_fuse_tiles_full_plane` only runs as that test's reference, so
-this is not a runtime risk. Folding the chunked path onto the kernels is the right end state,
-deferred deliberately rather than left out: it is hot-path code, and the kernels would receive
-broadcast (stride-0) channel views, which needs its own correctness and timing check, not a
-close-out edit.
+The whole-plane path always blended with the numba kernels (`accumulate_tile_shard` /
+`normalize_shard`); the chunked path duplicated the same arithmetic inline in numpy (the
+`np.divide(..., where=mask)` in §1). The chunked path now calls the same kernels, so there is one
+blend implementation, and `test_fuse_equivalence` isolates exactly the blocking logic (same
+kernel on both sides). Verified two ways: the equivalence test is byte-identical (single-channel),
+and a direct check confirms the kernel accepts the broadcast (stride-0) channel view that
+`_read_tile` produces when a single-channel read is expanded to C channels. This supersedes §1's
+in-place numpy divide on the chunked path; §1 still records what commit `a6840e5` did at the time.
+Tradeoff: the kernels are numba-JIT, so the first fusion block pays a one-time compile (seconds),
+negligible against a real run.

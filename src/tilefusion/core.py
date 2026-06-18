@@ -1109,14 +1109,15 @@ class TileFusion:
                     # Feather weight for exactly this FOV-local sub-region (A1's window, sliced).
                     w2d = self.y_profile[sy0:sy1, None] * self.x_profile[None, sx0:sx1]
 
-                    for c in range(C):
-                        fused_block[c, oy0:oy1, ox0:ox1] += tile_all[c, sy0:sy1, sx0:sx1] * w2d
-                        weight_sum[c, oy0:oy1, ox0:ox1] += w2d
+                    # Same blend kernel as the whole-plane path: accumulate this FOV's
+                    # sub-region into the block at its block-local origin (oy0, ox0).
+                    accumulate_tile_shard(
+                        fused_block, weight_sum, tile_all[:, sy0:sy1, sx0:sx1], w2d, oy0, ox0
+                    )
 
-                # In-place masked divide avoids the large fancy-index temporaries
-                # that `fused_block[mask] /= weight_sum[mask]` would allocate.
-                mask = weight_sum > 0
-                np.divide(fused_block, weight_sum, out=fused_block, where=mask)
+                # One blend, shared with _fuse_tiles_full_plane: normalize in place,
+                # zero where no FOV covered (weight 0). No mask temporary.
+                normalize_shard(fused_block, weight_sum)
 
                 # Write to 5D output: (T, C, Z, Y, X)
                 self.fused_ts[time_idx, :, z_level, block_y:by_end, block_x:bx_end].write(
