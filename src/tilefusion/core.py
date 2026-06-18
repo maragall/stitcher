@@ -15,6 +15,9 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
+# Output Zarr codec-chunk side, in pixels. The shard is 2x this per side.
+CODEC_CHUNK = 1024
+
 import numpy as np
 import tensorstore as ts
 import tifffile
@@ -230,7 +233,7 @@ class TileFusion:
         self.multiscale_downsample = multiscale_downsample
 
         self._update_profiles()
-        self.chunk_shape = (1, 1024, 1024)
+        self.chunk_shape = (1, CODEC_CHUNK, CODEC_CHUNK)
         self.chunk_y, self.chunk_x = self.chunk_shape[-2:]
 
         # State
@@ -922,6 +925,16 @@ class TileFusion:
     # Fusion
     # -------------------------------------------------------------------------
 
+    def _tile_pixel_origins(self) -> List[Tuple[int, int]]:
+        """Top-left (y, x) pixel position of each FOV on the plane."""
+        return [
+            (
+                int((y - self.offset[0]) / self._pixel_size[0]),
+                int((x - self.offset[1]) / self._pixel_size[1]),
+            )
+            for (y, x) in self._tile_positions
+        ]
+
     def _fuse_tiles(self, mode: str = "blended", chunked: bool = True) -> None:
         """Fuse all tiles into output, looping over z-levels and time points."""
         total_planes = self.n_t * self.n_z
@@ -944,13 +957,7 @@ class TileFusion:
         """Fuse tiles using direct placement for a single z/t plane."""
         import psutil
 
-        offsets = [
-            (
-                int((y - self.offset[0]) / self._pixel_size[0]),
-                int((x - self.offset[1]) / self._pixel_size[1]),
-            )
-            for (y, x) in self._tile_positions
-        ]
+        offsets = self._tile_pixel_origins()
         pad_Y, pad_X = self.padded_shape
 
         available_ram = psutil.virtual_memory().available
@@ -1015,13 +1022,7 @@ class TileFusion:
 
     def _fuse_tiles_full_plane(self, z_level: int = 0, time_idx: int = 0) -> None:
         """Fuse all tiles using full-image accumulator for a single z/t plane."""
-        offsets = [
-            (
-                int((y - self.offset[0]) / self._pixel_size[0]),
-                int((x - self.offset[1]) / self._pixel_size[1]),
-            )
-            for (y, x) in self._tile_positions
-        ]
+        offsets = self._tile_pixel_origins()
         pad_Y, pad_X = self.padded_shape
         C = self.channels
 
@@ -1077,11 +1078,9 @@ class TileFusion:
         if show_progress:
             print(f"Using chunked mode: {block_size}x{block_size} blocks")
 
-        tile_bounds = []
-        for y, x in self._tile_positions:
-            oy = int((y - self.offset[0]) / self._pixel_size[0])
-            ox = int((x - self.offset[1]) / self._pixel_size[1])
-            tile_bounds.append((oy, oy + self.Y, ox, ox + self.X))
+        tile_bounds = [
+            (oy, oy + self.Y, ox, ox + self.X) for (oy, ox) in self._tile_pixel_origins()
+        ]
 
         n_blocks_y = (pad_Y + block_size - 1) // block_size
         n_blocks_x = (pad_X + block_size - 1) // block_size
@@ -1187,8 +1186,8 @@ class TileFusion:
             _, _, _, Y, X = inp.shape
             new_y, new_x = Y // factor_to_use, X // factor_to_use
 
-            chunk_y = min(1024, new_y)
-            chunk_x = min(1024, new_x)
+            chunk_y = min(CODEC_CHUNK, new_y)
+            chunk_x = min(CODEC_CHUNK, new_x)
 
             self.padded_shape = (new_y, new_x)
             self.chunk_y, self.chunk_x = chunk_y, chunk_x

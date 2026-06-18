@@ -9,6 +9,9 @@ from pathlib import Path
 
 import numpy as np
 
+# Per-channel display colors, shared by every napari layer path.
+CHANNEL_COLORS = ["blue", "green", "yellow", "red", "magenta", "cyan"]
+
 # Fix Qt plugin path for conda environments on macOS
 if sys.platform == "darwin" and "CONDA_PREFIX" in os.environ:
     conda_plugins = Path(os.environ["CONDA_PREFIX"]) / "plugins"
@@ -156,7 +159,6 @@ class PreviewWorker(QThread):
 
     def run(self):
         try:
-            import numpy as np
             from tilefusion import TileFusion
 
             self.progress.emit("Loading metadata...")
@@ -378,7 +380,6 @@ def _run_fusion_pipeline(
     import shutil
     import time
 
-    import numpy as np
     from tilefusion import TileFusion
 
     def log(msg):
@@ -616,7 +617,6 @@ class FusionWorker(QThread):
             # Auto-compute blend_pixels from tile overlap if requested
             if self.blend_pixels is None:
                 from tilefusion.registration import find_adjacent_pairs
-                import numpy as np
 
                 pairs = find_adjacent_pairs(tf._tile_positions, tf._pixel_size, (tf.Y, tf.X))
                 if pairs:
@@ -690,7 +690,6 @@ class FusionWorker(QThread):
                 )
                 gc.collect()
 
-                import numpy as np
 
                 tf._tile_positions = [
                     tuple(np.array(pos) + off * np.array(tf.pixel_size))
@@ -1041,7 +1040,6 @@ class FlatfieldWorker(QThread):
 
     def run(self):
         try:
-            import numpy as np
             from basicpy import BaSiC
             from tilefusion import TileFusion, HAS_BASICPY
 
@@ -1835,7 +1833,6 @@ class StitcherGUI(QMainWindow):
         self.log(error_msg)
 
     def on_flatfield_dropped(self, file_path):
-        import numpy as np
 
         try:
             from tilefusion import load_flatfield
@@ -1873,7 +1870,6 @@ class StitcherGUI(QMainWindow):
 
             matplotlib.use("Agg")  # Non-interactive backend
             import matplotlib.pyplot as plt
-            import numpy as np
             import tempfile
             import subprocess
 
@@ -2261,7 +2257,6 @@ class StitcherGUI(QMainWindow):
         try:
             import napari
             import tensorstore as ts
-            import numpy as np
 
             zarr_path = Path(self.output_path)
             if self.is_multi_region and self.regions:
@@ -2288,7 +2283,6 @@ class StitcherGUI(QMainWindow):
             viewer = napari.Viewer()
             n_channels = shape[1]
 
-            channel_colors = ["blue", "green", "yellow", "red", "magenta", "cyan"]
             for c in range(n_channels):
                 # Compute MIP one z-plane at a time to avoid OOM
                 mip = None
@@ -2301,7 +2295,7 @@ class StitcherGUI(QMainWindow):
                 viewer.add_image(
                     mip,
                     name=f"MIP Ch{c}",
-                    colormap=channel_colors[c % len(channel_colors)],
+                    colormap=CHANNEL_COLORS[c % len(CHANNEL_COLORS)],
                     blending="additive",
                 )
                 del mip
@@ -2425,8 +2419,6 @@ def _add_fused_zarr(viewer, zarr_path, channel_names, log):
     shape = levels[0].shape  # (T, C, Z, Y, X) or (T, C, Y, X)
     is_5d = len(shape) == 5
     n_channels = shape[1] if len(shape) >= 4 else 1
-    colors = ["blue", "green", "yellow", "red", "magenta", "cyan"]
-
     for c in range(n_channels):
         pyramid = [lvl[:, c] for lvl in levels]  # lazy slice -> (T, Z, Y, X) per level
         sample = pyramid[-1][pyramid[-1].shape[0] // 2]  # smallest level, middle T
@@ -2438,7 +2430,7 @@ def _add_fused_zarr(viewer, zarr_path, channel_names, log):
             pyramid,
             multiscale=True,
             name=name,
-            colormap=colors[c % len(colors)],
+            colormap=CHANNEL_COLORS[c % len(CHANNEL_COLORS)],
             blending="additive",
             contrast_limits=contrast,
         )
