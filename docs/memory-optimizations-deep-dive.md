@@ -264,5 +264,11 @@ kernel on both sides). Verified two ways: the equivalence test is byte-identical
 and a direct check confirms the kernel accepts the broadcast (stride-0) channel view that
 `_read_tile` produces when a single-channel read is expanded to C channels. This supersedes §1's
 in-place numpy divide on the chunked path; §1 still records what commit `a6840e5` did at the time.
-Tradeoff: the kernels are numba-JIT, so the first fusion block pays a one-time compile (seconds),
-negligible against a real run.
+Tradeoff, measured: in a CPU-only micro-benchmark (a 2048-square, 4-channel block with four
+overlapping FOVs) the numba kernels blend in about 210 ms/block versus 190 ms/block for the inline
+numpy, so the unified path is roughly 10% slower at the blend itself. Across the `test_10x` plane
+(a 6x5 block grid, 10 z-levels, about 300 block-blends) that is on the order of +5 s of CPU. It
+does not show up in fusion wall-clock, which is I/O-bound: end-to-end fuse time on the same dataset
+ranged 60 to 113 s purely with machine load, well above that 5 s. So the cost is real in CPU terms
+and masked by I/O in practice. Kept deliberately: one blend implementation is worth ~10% of a
+non-bottleneck stage.
