@@ -66,6 +66,10 @@ dev = [
     "ruff>=0.1",
     "mypy>=1.0",
 ]
+profiling = [
+    "matplotlib>=3.5",
+    "seaborn>=0.12",
+]
 all = [
     "tilefusion[gpu,gui,flatfield,dev]",
 ]
@@ -118,3 +122,4 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --cov=tilefusion --cov-report=term-missing"
+pythonpath = ["."]
