@@ -1,0 +1,5 @@
+# Canonical author identity. Maps secondary emails/names (and a machine that
+# committed on Julio's behalf) onto one identity for git log / shortlog / blame.
+maragall <julio.maragall@cephla.com> <126172415+maragall@users.noreply.github.com>
+maragall <julio.maragall@cephla.com> <j.maragall@ufl.edu>
+maragall <julio.maragall@cephla.com> Cesar Alfonzo <cesar@Cesars-MacBook-Air.local>
