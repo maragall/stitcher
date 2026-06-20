@@ -656,32 +656,27 @@ class TileFusion:
     ) -> None:
         """Register tile pairs using parallel I/O and compute.
 
-        Uses batching only when estimated memory exceeds 30% of available RAM.
+        Strips are read and registered in fixed-size batches. The batch is tied
+        to the compute pool (``4 * n_workers`` pairs), so resident strip memory
+        is a constant set by concurrency, independent of the machine's RAM and of
+        the number of pairs. Pairs are independent, so batching changes only when
+        a strip is resident, never the resulting metrics.
         """
-        import psutil
-
         n_pairs = len(pair_bounds)
+        if n_pairs == 0:
+            return
         n_workers = min(cpu_count(), n_pairs, self._max_workers)
         io_workers = min(n_pairs, self._max_workers)
+
+        # Resident strips are bounded by the compute pool, not by free RAM or by
+        # the dataset size. The factor gives the workers a small read-ahead so
+        # they do not stall between batches.
+        batch_size = 4 * n_workers
+        n_batches = (n_pairs + batch_size - 1) // batch_size
         print(
-            f"Parallel registration: {n_pairs} pairs, {n_workers} compute workers, {io_workers} I/O workers"
+            f"Parallel registration: {n_pairs} pairs in {n_batches} batches, "
+            f"{n_workers} compute workers, {io_workers} I/O workers"
         )
-
-        # Estimate memory needed based on actual overlap size
-        if pair_bounds:
-            total_pixels = 0
-            for _, _, bounds_i_y, bounds_i_x, _, _ in pair_bounds:
-                patch_h = bounds_i_y[1] - bounds_i_y[0]
-                patch_w = bounds_i_x[1] - bounds_i_x[0]
-                total_pixels += patch_h * patch_w
-            # 4 bytes per float32 pixel, 2 patches per pair
-            estimated_memory = total_pixels * 4 * 2
-        else:
-            estimated_memory = 0
-
-        available_ram = psutil.virtual_memory().available
-        ram_budget = int(available_ram * 0.3)
-        needs_batching = estimated_memory > ram_budget
 
         def read_pair_patches(args):
             i_pos, j_pos, bounds_i_y, bounds_i_x, bounds_j_y, bounds_j_x = args
@@ -697,62 +692,27 @@ class TileFusion:
                 logger.warning("I/O failed for pair (%d, %d): %s", i_pos, j_pos, e)
                 return (i_pos, j_pos, None, None)
 
-        if needs_batching:
-            # Batched approach for large datasets
-            avg_pair_bytes = max(1, estimated_memory // n_pairs) if n_pairs > 0 else 1
-            batch_size = max(16, ram_budget // avg_pair_bytes)
-            n_batches = (n_pairs + batch_size - 1) // batch_size
+        for batch_idx in range(n_batches):
+            start = batch_idx * batch_size
+            end = min(start + batch_size, n_pairs)
+            batch = pair_bounds[start:end]
 
-            print(
-                f"Processing {n_pairs} pairs in {n_batches} batches (RAM limited, {n_workers} workers)"
-            )
-
-            for batch_idx in range(n_batches):
-                start = batch_idx * batch_size
-                end = min(start + batch_size, n_pairs)
-                batch = pair_bounds[start:end]
-
-                with ThreadPoolExecutor(max_workers=io_workers) as io_executor:
-                    patches = list(io_executor.map(read_pair_patches, batch))
-
-                work_items = [
-                    (i, j, pi, pj, df, sw, th, max_shift)
-                    for i, j, pi, pj in patches
-                    if pi is not None
-                ]
-
-                desc = f"register {batch_idx+1}/{n_batches}"
-                with ThreadPoolExecutor(max_workers=n_workers) as executor:
-                    results = list(
-                        tqdm(
-                            executor.map(register_pair_worker, work_items),
-                            total=len(work_items),
-                            desc=desc,
-                            leave=True,
-                        )
-                    )
-
-                for i_pos, j_pos, dy_s, dx_s, score in results:
-                    if dy_s is not None:
-                        self.pairwise_metrics[(i_pos, j_pos)] = (dy_s, dx_s, score)
-
-                del patches, work_items, results
-                gc.collect()
-        else:
-            # Simple approach - load all at once
             with ThreadPoolExecutor(max_workers=io_workers) as io_executor:
-                patches = list(io_executor.map(read_pair_patches, pair_bounds))
+                patches = list(io_executor.map(read_pair_patches, batch))
 
             work_items = [
-                (i, j, pi, pj, df, sw, th, max_shift) for i, j, pi, pj in patches if pi is not None
+                (i, j, pi, pj, df, sw, th, max_shift)
+                for i, j, pi, pj in patches
+                if pi is not None
             ]
 
+            desc = f"register {batch_idx+1}/{n_batches}"
             with ThreadPoolExecutor(max_workers=n_workers) as executor:
                 results = list(
                     tqdm(
                         executor.map(register_pair_worker, work_items),
                         total=len(work_items),
-                        desc="register",
+                        desc=desc,
                         leave=True,
                     )
                 )
