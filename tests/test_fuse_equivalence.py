@@ -1,0 +1,111 @@
+"""Chunked fuse must equal full-plane fuse (the optimization's correctness guard).
+
+This pins the behaviour the Phase 4 memory optimization must preserve: the
+memory-efficient chunked path must produce a byte-identical fused image to the
+full-plane path. Registration/optimization are skipped — we set tile positions
+directly so the test is deterministic and exercises only the fusion math.
+"""
+
+import json
+
+import numpy as np
+import pandas as pd
+import pytest
+import tensorstore as ts
+import tifffile
+
+from tilefusion import TileFusion
+
+
+def _write_dataset(path, tiles, positions):
+    """Individual-TIFFs dataset: manual_{fov}_0_ch0.tiff + coordinates.csv."""
+    img = path / "0"
+    img.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "fov": list(range(len(tiles))),
+            "x (mm)": [p[1] / 1000.0 for p in positions],
+            "y (mm)": [p[0] / 1000.0 for p in positions],
+        }
+    ).to_csv(img / "coordinates.csv", index=False)
+    for fov, tile in enumerate(tiles):
+        tifffile.imwrite(img / f"manual_{fov}_0_ch0.tiff", tile)
+    json.dump(
+        {"objective": {"magnification": 1.0}, "sensor_pixel_size_um": 1.0},
+        open(path / "acquisition parameters.json", "w"),
+    )
+
+
+def _read_scale0(path):
+    store = ts.open(
+        {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(path / "scale0" / "image")}}
+    ).result()
+    return np.asarray(store.read().result())
+
+
+def _prelude(tf):
+    """Set up fused space + output store using stage positions (no registration)."""
+    tf.chunk_y = tf.chunk_x = 32  # small chunks so a small image still chunks
+    tf._compute_fused_image_space()
+    tf._pad_to_chunk_multiple()
+    scale0 = tf.output_path / "scale0" / "image"
+    scale0.parent.mkdir(parents=True, exist_ok=True)
+    tf._create_fused_tensorstore(output_path=scale0)
+
+
+def test_chunked_equals_full_plane(tmp_path):
+    # 2x2 grid of 200px tiles, 40px overlap, random with bright features.
+    rng = np.random.default_rng(7)
+    ts_, ov = 200, 40
+    step = ts_ - ov
+    tiles = []
+    for _ in range(4):
+        t = rng.integers(100, 1000, size=(ts_, ts_), dtype=np.uint16)
+        t[60:140, 60:140] += 5000
+        tiles.append(t)
+    positions = [(0, 0), (0, step), (step, 0), (step, step)]
+
+    full_dir = tmp_path / "full_data"
+    chunk_dir = tmp_path / "chunk_data"
+    _write_dataset(full_dir, tiles, positions)
+    _write_dataset(chunk_dir, tiles, positions)
+
+    tf_full = TileFusion(full_dir, output_path=tmp_path / "full.zarr", blend_pixels=(0, 0))
+    _prelude(tf_full)
+    tf_full._fuse_tiles_full_plane()
+    full_out = _read_scale0(tf_full.output_path)
+
+    tf_chunk = TileFusion(chunk_dir, output_path=tmp_path / "chunk.zarr", blend_pixels=(0, 0))
+    _prelude(tf_chunk)
+    # block_size is fixed at chunk_y*2 = 64 (chunk_y overridden to 32 above) << image -> many blocks
+    tf_chunk._fuse_tiles_chunked_plane()
+    chunk_out = _read_scale0(tf_chunk.output_path)
+
+    np.testing.assert_array_equal(chunk_out, full_out)
+
+
+def test_direct_placement_streams_correctly(tmp_path):
+    # Direct mode = no blending: each FOV is placed (streamed) at its origin,
+    # overlaps overwritten (last FOV wins). Pins the streaming placement.
+    rng = np.random.default_rng(11)
+    ts_, ov = 200, 40
+    step = ts_ - ov
+    tiles = [rng.integers(100, 1000, size=(ts_, ts_), dtype=np.uint16) for _ in range(4)]
+    positions = [(0, 0), (0, step), (step, 0), (step, step)]
+
+    ddir = tmp_path / "direct_data"
+    _write_dataset(ddir, tiles, positions)
+
+    tf = TileFusion(ddir, output_path=tmp_path / "direct.zarr", blend_pixels=(0, 0))
+    _prelude(tf)
+    tf._fuse_tiles_direct_plane()
+    out = _read_scale0(tf.output_path)  # (T, C, Z, Y, X)
+
+    # Expected: place each FOV at its pixel origin in order, last writer wins.
+    pad_Y, pad_X = tf.padded_shape
+    expected = np.zeros((1, 1, 1, pad_Y, pad_X), dtype=np.uint16)
+    for (oy, ox), tile in zip(tf._tile_pixel_origins(), tiles):
+        y_end, x_end = min(oy + tf.Y, pad_Y), min(ox + tf.X, pad_X)
+        expected[0, 0, 0, oy:y_end, ox:x_end] = tile[: y_end - oy, : x_end - ox]
+
+    np.testing.assert_array_equal(out, expected)

@@ -15,6 +15,9 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
+# Output Zarr codec-chunk side, in pixels. The shard is 2x this per side.
+CODEC_CHUNK = 1024
+
 import numpy as np
 import tensorstore as ts
 import tifffile
@@ -230,7 +233,7 @@ class TileFusion:
         self.multiscale_downsample = multiscale_downsample
 
         self._update_profiles()
-        self.chunk_shape = (1, 1024, 1024)
+        self.chunk_shape = (1, CODEC_CHUNK, CODEC_CHUNK)
         self.chunk_y, self.chunk_x = self.chunk_shape[-2:]
 
         # State
@@ -503,6 +506,11 @@ class TileFusion:
         # Apply flatfield correction if enabled
         if self._flatfield is not None:
             tile = apply_flatfield(tile, self._flatfield, self._darkfield)
+
+        # Every fusion path expects C channels; broadcast a single-channel read up
+        # so the placement/blend code never has to special-case channel count.
+        if tile.shape[0] == 1 and self.channels > 1:
+            tile = np.broadcast_to(tile, (self.channels, tile.shape[1], tile.shape[2]))
 
         return tile
 
@@ -922,9 +930,17 @@ class TileFusion:
     # Fusion
     # -------------------------------------------------------------------------
 
-    def _fuse_tiles(
-        self, mode: str = "blended", chunked: bool = True, ram_fraction: float = 0.4
-    ) -> None:
+    def _tile_pixel_origins(self) -> List[Tuple[int, int]]:
+        """Top-left (y, x) pixel position of each FOV on the plane."""
+        return [
+            (
+                int((y - self.offset[0]) / self._pixel_size[0]),
+                int((x - self.offset[1]) / self._pixel_size[1]),
+            )
+            for (y, x) in self._tile_positions
+        ]
+
+    def _fuse_tiles(self, mode: str = "blended", chunked: bool = True) -> None:
         """Fuse all tiles into output, looping over z-levels and time points."""
         total_planes = self.n_t * self.n_z
         plane_idx = 0
@@ -938,92 +954,47 @@ class TileFusion:
                 if mode == "direct":
                     self._fuse_tiles_direct_plane(z_level=z, time_idx=t)
                 elif chunked:
-                    self._fuse_tiles_chunked_plane(z_level=z, time_idx=t, ram_fraction=ram_fraction)
+                    self._fuse_tiles_chunked_plane(z_level=z, time_idx=t)
                 else:
                     self._fuse_tiles_full_plane(z_level=z, time_idx=t)
 
     def _fuse_tiles_direct_plane(self, z_level: int = 0, time_idx: int = 0) -> None:
-        """Fuse tiles using direct placement for a single z/t plane."""
-        import psutil
+        """Place tiles directly (no blending) for a single z/t plane.
 
-        offsets = [
-            (
-                int((y - self.offset[0]) / self._pixel_size[0]),
-                int((x - self.offset[1]) / self._pixel_size[1]),
-            )
-            for (y, x) in self._tile_positions
-        ]
+        Each tile is streamed straight to the output store, so memory is bounded by
+        one tile regardless of plane size or machine RAM. Overlaps are overwritten
+        (last tile wins); use blended/chunked fusion for feathered seams.
+        """
+        offsets = self._tile_pixel_origins()
         pad_Y, pad_X = self.padded_shape
-
-        available_ram = psutil.virtual_memory().available
-        output_bytes = pad_Y * pad_X * self.channels * 2
-        use_memory = output_bytes < 0.45 * available_ram
-
         show_progress = self.n_t == 1 and self.n_z == 1  # Only show progress for single plane
 
-        if use_memory:
-            if show_progress:
-                print(f"Direct mode: using in-memory buffer ({output_bytes / 1e9:.2f} GB)")
-            output = np.zeros((1, self.channels, 1, pad_Y, pad_X), dtype=np.uint16)
+        iterator = (
+            trange(len(offsets), desc="placing tiles", leave=True)
+            if show_progress
+            else range(len(offsets))
+        )
+        for t_idx in iterator:
+            oy, ox = offsets[t_idx]
+            tile_all = self._read_tile(t_idx, z_level=z_level, time_idx=time_idx)
 
-            iterator = (
-                trange(len(offsets), desc="placing tiles", leave=True)
-                if show_progress
-                else range(len(offsets))
-            )
-            for t_idx in iterator:
-                oy, ox = offsets[t_idx]
-                tile_all = self._read_tile(t_idx, z_level=z_level, time_idx=time_idx)
+            y_end = min(oy + self.Y, pad_Y)
+            x_end = min(ox + self.X, pad_X)
+            tile_h = y_end - oy
+            tile_w = x_end - ox
 
-                y_end = min(oy + self.Y, pad_Y)
-                x_end = min(ox + self.X, pad_X)
-                tile_h = y_end - oy
-                tile_w = x_end - ox
-
-                if tile_h > 0 and tile_w > 0:
-                    output[0, :, 0, oy:y_end, ox:x_end] = tile_all[:, :tile_h, :tile_w]
-
-            if show_progress:
-                print("Writing to disk...")
-            self.fused_ts[time_idx : time_idx + 1, :, z_level : z_level + 1, :, :].write(
-                output
-            ).result()
-            del output
-        else:
-            if show_progress:
-                print(f"Direct mode: writing directly to disk")
-            iterator = (
-                trange(len(offsets), desc="placing tiles", leave=True)
-                if show_progress
-                else range(len(offsets))
-            )
-            for t_idx in iterator:
-                oy, ox = offsets[t_idx]
-                tile_all = self._read_tile(t_idx, z_level=z_level, time_idx=time_idx)
-
-                y_end = min(oy + self.Y, pad_Y)
-                x_end = min(ox + self.X, pad_X)
-                tile_h = y_end - oy
-                tile_w = x_end - ox
-
-                if tile_h > 0 and tile_w > 0:
-                    tile_region = tile_all[:, :tile_h, :tile_w].astype(np.uint16)
-                    # Shape: (1, C, 1, h, w)
-                    self.fused_ts[
-                        time_idx : time_idx + 1, :, z_level : z_level + 1, oy:y_end, ox:x_end
-                    ].write(tile_region[np.newaxis, :, np.newaxis, :, :]).result()
+            if tile_h > 0 and tile_w > 0:
+                tile_region = tile_all[:, :tile_h, :tile_w].astype(np.uint16)
+                # Shape: (1, C, 1, h, w)
+                self.fused_ts[
+                    time_idx : time_idx + 1, :, z_level : z_level + 1, oy:y_end, ox:x_end
+                ].write(tile_region[np.newaxis, :, np.newaxis, :, :]).result()
 
         gc.collect()
 
     def _fuse_tiles_full_plane(self, z_level: int = 0, time_idx: int = 0) -> None:
         """Fuse all tiles using full-image accumulator for a single z/t plane."""
-        offsets = [
-            (
-                int((y - self.offset[0]) / self._pixel_size[0]),
-                int((x - self.offset[1]) / self._pixel_size[1]),
-            )
-            for (y, x) in self._tile_positions
-        ]
+        offsets = self._tile_pixel_origins()
         pad_Y, pad_X = self.padded_shape
         C = self.channels
 
@@ -1042,9 +1013,6 @@ class TileFusion:
             oy, ox = offsets[t_idx]
             tile_all = self._read_tile(t_idx, z_level=z_level, time_idx=time_idx)
 
-            if tile_all.shape[0] == 1 and C > 1:
-                tile_all = np.broadcast_to(tile_all, (C, tile_all.shape[1], tile_all.shape[2]))
-
             accumulate_tile_shard(fused_block, weight_sum, tile_all, w2d, oy, ox)
 
         normalize_shard(fused_block, weight_sum)
@@ -1059,42 +1027,41 @@ class TileFusion:
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
 
-    def _fuse_tiles_chunked_plane(
-        self, z_level: int = 0, time_idx: int = 0, ram_fraction: float = 0.4
-    ) -> None:
-        """Fuse tiles using memory-efficient chunked processing for a single z/t plane."""
-        import psutil
+    def _fuse_tiles_chunked_plane(self, z_level: int = 0, time_idx: int = 0) -> None:
+        """Fuse tiles block-by-block for a single z/t plane, at fixed low memory.
 
-        available_ram = psutil.virtual_memory().available
-        usable_ram = int(available_ram * ram_fraction)
-        bytes_per_pixel = 4 * 2 * self.channels
-        max_pixels = usable_ram // bytes_per_pixel
-        block_size = int(np.sqrt(max_pixels))
-        block_size = (block_size // self.chunk_y) * self.chunk_y
-        block_size = max(block_size, self.chunk_y * 2)
-        block_size = min(block_size, 10240)
+        The block size is fixed at one storage shard per side (``chunk_y * 2``),
+        independent of available RAM. The fusion scratchpad is therefore bounded
+        by construction: it never grows with the machine and never falls back to
+        a full-plane allocation, so peak memory at fusion time is the same small,
+        predictable amount on any computer and cannot blow up. Output is
+        identical regardless of block size (guarded by test_fuse_equivalence).
+        """
+        # One shard (2 codec chunks) per side. At 4 channels the per-block
+        # working set (fused f32 + weight f32 + uint16 write copy) is ~167 MB.
+        block_size = self.chunk_y * 2
 
         pad_Y, pad_X = self.padded_shape
-
-        if block_size >= max(pad_Y, pad_X):
-            if self.n_t == 1 and self.n_z == 1:
-                print(f"Image fits in RAM budget, using full mode")
-            return self._fuse_tiles_full_plane(z_level=z_level, time_idx=time_idx)
 
         show_progress = self.n_t == 1 and self.n_z == 1
         if show_progress:
             print(f"Using chunked mode: {block_size}x{block_size} blocks")
 
-        tile_bounds = []
-        for y, x in self._tile_positions:
-            oy = int((y - self.offset[0]) / self._pixel_size[0])
-            ox = int((x - self.offset[1]) / self._pixel_size[1])
-            tile_bounds.append((oy, oy + self.Y, ox, ox + self.X))
+        tile_bounds = [
+            (oy, oy + self.Y, ox, ox + self.X) for (oy, ox) in self._tile_pixel_origins()
+        ]
 
         n_blocks_y = (pad_Y + block_size - 1) // block_size
         n_blocks_x = (pad_X + block_size - 1) // block_size
         total_blocks = n_blocks_y * n_blocks_x
         C = self.channels
+
+        # Reusable per-block accumulators (sized to the largest block); zeroed
+        # and sub-viewed per block instead of re-allocated each iteration.
+        max_bh = min(block_size, pad_Y)
+        max_bw = min(block_size, pad_X)
+        fused_buf = np.zeros((C, max_bh, max_bw), dtype=np.float32)
+        weight_buf = np.zeros((C, max_bh, max_bw), dtype=np.float32)
 
         block_idx = 0
         for block_y in range(0, pad_Y, block_size):
@@ -1112,8 +1079,10 @@ class TileFusion:
                 if not overlapping:
                     continue
 
-                fused_block = np.zeros((C, bh, bw), dtype=np.float32)
-                weight_sum = np.zeros_like(fused_block)
+                fused_block = fused_buf[:, :bh, :bw]
+                weight_sum = weight_buf[:, :bh, :bw]
+                fused_block[...] = 0.0
+                weight_sum[...] = 0.0
 
                 desc = f"block {block_idx}/{total_blocks}"
                 iterator = (
@@ -1122,39 +1091,40 @@ class TileFusion:
                 for t_idx in iterator:
                     tile_all = self._read_tile(t_idx, z_level=z_level, time_idx=time_idx)
 
-                    if tile_all.shape[0] == 1 and C > 1:
-                        tile_all = np.broadcast_to(
-                            tile_all, (C, tile_all.shape[1], tile_all.shape[2])
-                        )
+                    ty0, ty1, tx0, tx1 = tile_bounds[t_idx]  # this FOV's rectangle on the plane
 
-                    ty0, ty1, tx0, tx1 = tile_bounds[t_idx]
-
+                    # Intersection of FOV and block, expressed two ways:
+                    # destination box in BLOCK-local coords (where it lands in fused_block)...
                     oy0 = max(ty0, block_y) - block_y
                     oy1 = min(ty1, by_end) - block_y
                     ox0 = max(tx0, block_x) - block_x
                     ox1 = min(tx1, bx_end) - block_x
 
+                    # ...and the same region in FOV-local coords (which pixels of the FOV to read).
                     sy0 = max(block_y - ty0, 0)
                     sy1 = sy0 + (oy1 - oy0)
                     sx0 = max(block_x - tx0, 0)
                     sx1 = sx0 + (ox1 - ox0)
 
+                    # Feather weight for exactly this FOV-local sub-region (A1's window, sliced).
                     w2d = self.y_profile[sy0:sy1, None] * self.x_profile[None, sx0:sx1]
 
-                    for c in range(C):
-                        fused_block[c, oy0:oy1, ox0:ox1] += tile_all[c, sy0:sy1, sx0:sx1] * w2d
-                        weight_sum[c, oy0:oy1, ox0:ox1] += w2d
+                    # Same blend kernel as the whole-plane path: accumulate this FOV's
+                    # sub-region into the block at its block-local origin (oy0, ox0).
+                    accumulate_tile_shard(
+                        fused_block, weight_sum, tile_all[:, sy0:sy1, sx0:sx1], w2d, oy0, ox0
+                    )
 
-                mask = weight_sum > 0
-                fused_block[mask] /= weight_sum[mask]
+                # One blend, shared with _fuse_tiles_full_plane: normalize in place,
+                # zero where no FOV covered (weight 0). No mask temporary.
+                normalize_shard(fused_block, weight_sum)
 
                 # Write to 5D output: (T, C, Z, Y, X)
                 self.fused_ts[time_idx, :, z_level, block_y:by_end, block_x:bx_end].write(
                     fused_block.astype(np.uint16)
                 ).result()
 
-                del fused_block, weight_sum
-
+        del fused_buf, weight_buf
         gc.collect()
         if USING_GPU and cp is not None:
             cp.get_default_memory_pool().free_all_blocks()
@@ -1185,8 +1155,8 @@ class TileFusion:
             _, _, _, Y, X = inp.shape
             new_y, new_x = Y // factor_to_use, X // factor_to_use
 
-            chunk_y = min(1024, new_y)
-            chunk_x = min(1024, new_x)
+            chunk_y = min(CODEC_CHUNK, new_y)
+            chunk_x = min(CODEC_CHUNK, new_x)
 
             self.padded_shape = (new_y, new_x)
             self.chunk_y, self.chunk_x = chunk_y, chunk_x

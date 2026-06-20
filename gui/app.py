@@ -5,7 +5,13 @@ Stitcher GUI - A simple interface for tile fusion of OME-TIFF files.
 
 import sys
 import os
+import traceback
 from pathlib import Path
+
+import numpy as np
+
+# Per-channel display colors, shared by every napari layer path.
+CHANNEL_COLORS = ["blue", "green", "yellow", "red", "magenta", "cyan"]
 
 # Fix Qt plugin path for conda environments on macOS
 if sys.platform == "darwin" and "CONDA_PREFIX" in os.environ:
@@ -154,7 +160,6 @@ class PreviewWorker(QThread):
 
     def run(self):
         try:
-            import numpy as np
             from tilefusion import TileFusion
 
             self.progress.emit("Loading metadata...")
@@ -329,7 +334,6 @@ class PreviewWorker(QThread):
             self.finished.emit(color_before, color_after, fused)
 
         except Exception as e:
-            import traceback
 
             self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
 
@@ -352,6 +356,8 @@ class _TqdmSignalRedirect:
 
     def flush(self):
         pass
+
+
 def _run_fusion_pipeline(
     tiff_path,
     do_registration,
@@ -374,7 +380,6 @@ def _run_fusion_pipeline(
     import shutil
     import time
 
-    import numpy as np
     from tilefusion import TileFusion
 
     def log(msg):
@@ -612,10 +617,8 @@ class FusionWorker(QThread):
             # Auto-compute blend_pixels from tile overlap if requested
             if self.blend_pixels is None:
                 from tilefusion.registration import find_adjacent_pairs
-                import numpy as np
-                pairs = find_adjacent_pairs(
-                    tf._tile_positions, tf._pixel_size, (tf.Y, tf.X)
-                )
+
+                pairs = find_adjacent_pairs(tf._tile_positions, tf._pixel_size, (tf.Y, tf.X))
                 if pairs:
                     overlaps_y = [p[4] for p in pairs if p[4] > 0]
                     overlaps_x = [p[5] for p in pairs if p[5] > 0]
@@ -623,7 +626,9 @@ class FusionWorker(QThread):
                     median_overlap_x = int(np.median(overlaps_x)) if overlaps_x else 50
                     blend_pixels = (max(median_overlap_y // 2, 10), max(median_overlap_x // 2, 10))
                     tf.blend_pixels = blend_pixels
-                    self.progress.emit(f"Auto blend width: {blend_pixels[0]}px (Y), {blend_pixels[1]}px (X)")
+                    self.progress.emit(
+                        f"Auto blend width: {blend_pixels[0]}px (Y), {blend_pixels[1]}px (X)"
+                    )
                 else:
                     tf.blend_pixels = (50, 50)
                     self.progress.emit("No adjacent pairs detected — using default 50px blend")
@@ -640,9 +645,7 @@ class FusionWorker(QThread):
             for region_idx, region in enumerate(regions):
                 if is_multi_region:
                     region_output = output_folder / f"{region}.ome.zarr"
-                    self.progress.emit(
-                        f"\nRegion {region_idx + 1}/{len(regions)}: {region}"
-                    )
+                    self.progress.emit(f"\nRegion {region_idx + 1}/{len(regions)}: {region}")
                     tf = TileFusion(
                         self.tiff_path,
                         output_path=region_output,
@@ -655,9 +658,7 @@ class FusionWorker(QThread):
                         channel_to_use=self.registration_channel,
                         region=region,
                     )
-                    self.progress.emit(
-                        f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each)"
-                    )
+                    self.progress.emit(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each)")
                     cur_output = region_output
                 else:
                     cur_output = output_path
@@ -689,7 +690,7 @@ class FusionWorker(QThread):
                 )
                 gc.collect()
 
-                import numpy as np
+
                 tf._tile_positions = [
                     tuple(np.array(pos) + off * np.array(tf.pixel_size))
                     for pos, off in zip(tf._tile_positions, tf.global_offsets)
@@ -747,7 +748,6 @@ class FusionWorker(QThread):
             self.finished.emit(str(output_path), elapsed_time)
 
         except Exception as e:
-            import traceback
 
             self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
 
@@ -787,7 +787,6 @@ class BatchFusionWorker(QThread):
         try:
             self._run_batch()
         except Exception as e:
-            import traceback
 
             self.error.emit(f"Batch processing failed: {e}\n{traceback.format_exc()}")
             self.finished.emit(0, len(self.paths), 0.0)
@@ -826,7 +825,6 @@ class BatchFusionWorker(QThread):
                 self.item_finished.emit(idx, total)
                 break
             except Exception as e:
-                import traceback
 
                 failed += 1
                 self._log(idx, total, name, f"FAILED: {e}")
@@ -1039,7 +1037,6 @@ class FlatfieldWorker(QThread):
 
     def run(self):
         try:
-            import numpy as np
             from basicpy import BaSiC
             from tilefusion import TileFusion, HAS_BASICPY
 
@@ -1061,9 +1058,7 @@ class FlatfieldWorker(QThread):
             rng = np.random.default_rng(42)
             sample_indices = sorted(rng.choice(n_tiles, size=n_samples, replace=False))
 
-            self.progress.emit(
-                f"Computing flatfield: {n_samples} tiles, {n_channels} channels..."
-            )
+            self.progress.emit(f"Computing flatfield: {n_samples} tiles, {n_channels} channels...")
 
             # Process per-channel to avoid OOM on large multi-channel z-stacks.
             # Only one channel's worth of tiles is in memory at a time.
@@ -1102,7 +1097,6 @@ class FlatfieldWorker(QThread):
             self.finished.emit(flatfield, darkfield)
 
         except Exception as e:
-            import traceback
 
             self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
 
@@ -1354,7 +1348,9 @@ class StitcherGUI(QMainWindow):
         self.blend_auto_checkbox = QCheckBox("Auto")
         self.blend_auto_checkbox.setChecked(True)
         self.blend_auto_checkbox.setToolTip("Auto-compute blend width as half the tile overlap")
-        self.blend_auto_checkbox.toggled.connect(lambda checked: self.blend_spin.setEnabled(not checked))
+        self.blend_auto_checkbox.toggled.connect(
+            lambda checked: self.blend_spin.setEnabled(not checked)
+        )
         blend_value_layout.addWidget(self.blend_auto_checkbox)
         self.blend_spin = QSpinBox()
         self.blend_spin.setRange(1, 500)
@@ -1374,7 +1370,9 @@ class StitcherGUI(QMainWindow):
         self.outlier_rel_spin.setRange(1, 200)
         self.outlier_rel_spin.setValue(50)
         self.outlier_rel_spin.setSuffix("%")
-        self.outlier_rel_spin.setToolTip("Relative threshold: reject links with residual > this % of median")
+        self.outlier_rel_spin.setToolTip(
+            "Relative threshold: reject links with residual > this % of median"
+        )
         self.outlier_rel_spin.setFixedWidth(80)
         outlier_layout.addWidget(self.outlier_rel_spin)
         outlier_layout.addWidget(QLabel("abs:"))
@@ -1382,7 +1380,9 @@ class StitcherGUI(QMainWindow):
         self.outlier_abs_spin.setRange(1, 50)
         self.outlier_abs_spin.setValue(2)
         self.outlier_abs_spin.setSuffix("px")
-        self.outlier_abs_spin.setToolTip("Absolute threshold: minimum residual (pixels) to reject a link")
+        self.outlier_abs_spin.setToolTip(
+            "Absolute threshold: minimum residual (pixels) to reject a link"
+        )
         self.outlier_abs_spin.setFixedWidth(80)
         outlier_layout.addWidget(self.outlier_abs_spin)
         outlier_layout.addStretch()
@@ -1460,7 +1460,9 @@ class StitcherGUI(QMainWindow):
 
         self.open_existing_button = QPushButton("Open Existing")
         self.open_existing_button.setCursor(Qt.PointingHandCursor)
-        self.open_existing_button.setToolTip("Load a previously fused output to view in Napari or compute MIP")
+        self.open_existing_button.setToolTip(
+            "Load a previously fused output to view in Napari or compute MIP"
+        )
         self.open_existing_button.clicked.connect(self.open_existing_in_napari)
         actions_layout.addWidget(self.open_existing_button)
 
@@ -1488,9 +1490,7 @@ class StitcherGUI(QMainWindow):
             brand_layout.addWidget(logo_label)
 
         brand_text = QLabel("cephla")
-        brand_text.setStyleSheet(
-            "color: #31c4f3; font-size: 10px; letter-spacing: 3px;"
-        )
+        brand_text.setStyleSheet("color: #31c4f3; font-size: 10px; letter-spacing: 3px;")
         brand_layout.addWidget(brand_text)
         brand_layout.addStretch()
         layout.addWidget(brand_widget)
@@ -1506,6 +1506,7 @@ class StitcherGUI(QMainWindow):
             renderer.render(painter)
             painter.end()
             self.setWindowIcon(QIcon(pixmap))
+
     @property
     def is_batch_mode(self):
         return len(self.batch_paths) > 1
@@ -1828,7 +1829,6 @@ class StitcherGUI(QMainWindow):
         self.log(error_msg)
 
     def on_flatfield_dropped(self, file_path):
-        import numpy as np
 
         try:
             from tilefusion import load_flatfield
@@ -1866,7 +1866,6 @@ class StitcherGUI(QMainWindow):
 
             matplotlib.use("Agg")  # Non-interactive backend
             import matplotlib.pyplot as plt
-            import numpy as np
             import tempfile
             import subprocess
 
@@ -1939,7 +1938,7 @@ class StitcherGUI(QMainWindow):
     def log(self, message):
         if message.startswith("\x00PROGRESS:"):
             # Update last line in-place for progress bars
-            text = message[len("\x00PROGRESS:"):]
+            text = message[len("\x00PROGRESS:") :]
             cursor = self.log_text.textCursor()
             cursor.movePosition(cursor.End)
             cursor.select(cursor.LineUnderCursor)
@@ -1951,10 +1950,7 @@ class StitcherGUI(QMainWindow):
 
     def _flatfield_in_progress(self):
         """Check if flatfield calculation is still running."""
-        return (
-            self.flatfield_worker is not None
-            and self.flatfield_worker.isRunning()
-        )
+        return self.flatfield_worker is not None and self.flatfield_worker.isRunning()
 
     def run_stitching(self):
         if not self.drop_area.file_path:
@@ -1964,6 +1960,7 @@ class StitcherGUI(QMainWindow):
             self.log("Waiting for flatfield calculation to finish...")
             self.run_button.setEnabled(False)
             self.preview_button.setEnabled(False)
+
             # One-shot connection — disconnect after firing to prevent stacking
             def _on_ready(*_args):
                 try:
@@ -1971,6 +1968,7 @@ class StitcherGUI(QMainWindow):
                 except TypeError:
                     pass
                 self.run_stitching()
+
             self.flatfield_worker.finished.connect(_on_ready)
             return
 
@@ -2121,12 +2119,14 @@ class StitcherGUI(QMainWindow):
             self.log("Waiting for flatfield calculation to finish...")
             self.run_button.setEnabled(False)
             self.preview_button.setEnabled(False)
+
             def _on_ready(*_args):
                 try:
                     self.flatfield_worker.finished.disconnect(_on_ready)
                 except TypeError:
                     pass
                 self.run_preview()
+
             self.flatfield_worker.finished.connect(_on_ready)
             return
 
@@ -2184,7 +2184,7 @@ class StitcherGUI(QMainWindow):
                 viewer.add_image(fused, name="Fused result", colormap="gray", visible=False)
             napari.run()
         except Exception as e:
-            self.log(f"Error opening Napari: {e}")
+            self.log(f"Error opening Napari: {e}\n{traceback.format_exc()}")
 
     def on_preview_error(self, error_msg):
         self.progress_bar.setVisible(False)
@@ -2204,6 +2204,18 @@ class StitcherGUI(QMainWindow):
         self.region_combo.setCurrentIndex(value)
         self.region_combo.blockSignals(False)
 
+    def _fused_channel_names(self):
+        """Channel display names from the input dataset metadata, or None."""
+        try:
+            from tilefusion import TileFusion
+
+            tf = TileFusion(self.drop_area.file_path)
+            if "channel_names" in tf._metadata:
+                return [ch.replace("_", " ") for ch in tf._metadata["channel_names"]]
+        except Exception:
+            pass
+        return None
+
     def open_in_napari(self):
         if not self.output_path:
             try:
@@ -2212,7 +2224,7 @@ class StitcherGUI(QMainWindow):
                 napari.Viewer()
                 napari.run()
             except Exception as e:
-                self.log(f"Error opening Napari: {e}")
+                self.log(f"Error opening Napari: {e}\n{traceback.format_exc()}")
             return
 
         # Determine the actual zarr path to open
@@ -2226,194 +2238,12 @@ class StitcherGUI(QMainWindow):
 
         try:
             import napari
-            import tensorstore as ts
-            import numpy as np
 
             viewer = napari.Viewer()
-            output_path = zarr_path
-
-            # Find all scale levels
-            scale_dirs = sorted(output_path.glob("scale*"))
-            pyramid_data = []
-
-            for scale_dir in scale_dirs:
-                image_path = scale_dir / "image"
-                if image_path.exists():
-                    store = ts.open(
-                        {
-                            "driver": "zarr3",
-                            "kvstore": {"driver": "file", "path": str(image_path)},
-                        }
-                    ).result()
-                    pyramid_data.append(store)
-
-            if not pyramid_data:
-                self.log("No image data found in output")
-                return
-
-            # Get shape from first level: (t, c, z, y, x) or (t, c, y, x)
-            shape = pyramid_data[0].shape
-            is_5d = len(shape) == 5
-            n_channels = shape[1] if len(shape) >= 4 else 1
-            n_z = shape[2] if is_5d else 1
-            middle_z = n_z // 2
-
-            # Get channel names if available
-            channel_names = None
-            try:
-                from tilefusion import TileFusion
-
-                tf = TileFusion(self.drop_area.file_path)
-                if "channel_names" in tf._metadata:
-                    channel_names = [ch.replace("_", " ") for ch in tf._metadata["channel_names"]]
-            except:
-                pass
-
-            channel_colors = ["blue", "green", "yellow", "red", "magenta", "cyan"]
-
-            def auto_contrast(data, pmax=99.9):
-                """Compute contrast limits optimized for fluorescence microscopy.
-
-                Uses mode-based background detection: finds the histogram peak
-                (background) and sets minimum above it. This effectively
-                suppresses background while preserving signal.
-                """
-                # Estimate background using histogram mode
-                # Sample data for speed if large
-                flat = data.ravel()
-                if len(flat) > 100000:
-                    flat = np.random.choice(flat, 100000, replace=False)
-
-                # Find histogram peak (mode) - this is the background
-                hist, bin_edges = np.histogram(flat, bins=256)
-                mode_idx = np.argmax(hist)
-                mode_val = (bin_edges[mode_idx] + bin_edges[mode_idx + 1]) / 2
-
-                # Estimate background noise (std of values below median)
-                background_pixels = flat[flat <= np.median(flat)]
-                if len(background_pixels) > 0:
-                    bg_std = np.std(background_pixels)
-                else:
-                    bg_std = mode_val * 0.1
-
-                # Set min to mode + 2*std (above background noise)
-                lo = mode_val + 2 * bg_std
-                hi = np.percentile(data, pmax)
-
-                # Ensure minimum range
-                if hi - lo < 10:
-                    hi = lo + 100
-                return [float(lo), float(hi)]
-
-            def dtype_range(dtype):
-                """Get valid range for a numpy dtype."""
-                if np.issubdtype(dtype, np.integer):
-                    info = np.iinfo(dtype)
-                    return [info.min, info.max]
-                elif np.issubdtype(dtype, np.floating):
-                    return [0.0, 1.0]
-                return [0, 65535]
-
-            # Use lowest resolution level for fast auto-contrast computation
-            lowest_res = pyramid_data[-1]
-
-            # Check if we have multiple z or t
-            has_zt_dims = is_5d and (n_z > 1 or shape[0] > 1)  # shape[0] is T
-
-            if has_zt_dims:
-                # Use a downsampled level to avoid OOM on large z-stacks.
-                # Prefer scale2 (4x downsample) if available, else lowest available.
-                ds_idx = min(2, len(pyramid_data) - 1)
-                store = pyramid_data[ds_idx]
-                ds_shape = store.shape
-                ds_label = f"scale{ds_idx}" if ds_idx > 0 else "full resolution"
-                self.log(
-                    f"Loading volume ({ds_label}): T={ds_shape[0]}, C={ds_shape[1]}, "
-                    f"Z={ds_shape[2]}, {ds_shape[3]}x{ds_shape[4]}"
-                )
-                est_gb = ds_shape[0] * ds_shape[2] * ds_shape[3] * ds_shape[4] * 2 / 1e9
-                if est_gb * n_channels > 12:
-                    self.log(
-                        f"Warning: estimated {est_gb * n_channels:.1f} GB needed. "
-                        "May exceed available RAM."
-                    )
-
-                for c in range(n_channels):
-                    data = store[:, c, :, :, :].read().result()
-                    data = np.asarray(data)
-
-                    # Auto-contrast from middle slice
-                    mid_t, mid_z = data.shape[0] // 2, data.shape[1] // 2
-                    contrast = auto_contrast(data[mid_t, mid_z])
-
-                    name = (
-                        channel_names[c]
-                        if channel_names and c < len(channel_names)
-                        else f"Channel {c}"
-                    )
-                    layer = viewer.add_image(
-                        data,
-                        name=name,
-                        colormap=channel_colors[c % len(channel_colors)],
-                        blending="additive",
-                        contrast_limits=contrast,
-                    )
-                    layer.contrast_limits_range = dtype_range(data.dtype)
-
-                # Set axis labels for sliders after adding layers
-                viewer.dims.axis_labels = ("t", "z", "y", "x")
-            elif n_channels > 1:
-                for c in range(n_channels):
-                    # Read channel data from each pyramid level
-                    channel_pyramid = []
-                    for store in pyramid_data:
-                        if is_5d:
-                            data = store[0, c, middle_z, :, :].read().result()
-                        else:
-                            data = store[0, c, :, :].read().result()
-                        channel_pyramid.append(np.asarray(data))
-
-                    # Auto-contrast from lowest res level
-                    contrast = auto_contrast(channel_pyramid[-1])
-
-                    name = (
-                        channel_names[c]
-                        if channel_names and c < len(channel_names)
-                        else f"Channel {c}"
-                    )
-                    layer = viewer.add_image(
-                        channel_pyramid,
-                        multiscale=True,
-                        name=name,
-                        colormap=channel_colors[c % len(channel_colors)],
-                        blending="additive",
-                        contrast_limits=contrast,
-                    )
-                    layer.contrast_limits_range = dtype_range(channel_pyramid[-1].dtype)
-            else:
-                # Single channel
-                single_pyramid = []
-                for store in pyramid_data:
-                    if is_5d:
-                        data = store[0, 0, middle_z, :, :].read().result()
-                    else:
-                        data = store[0, 0, :, :].read().result()
-                    single_pyramid.append(np.asarray(data))
-
-                contrast = auto_contrast(single_pyramid[-1])
-
-                layer = viewer.add_image(
-                    single_pyramid,
-                    multiscale=True,
-                    name=output_path.stem,
-                    contrast_limits=contrast,
-                )
-                layer.contrast_limits_range = dtype_range(single_pyramid[-1].dtype)
-
+            _add_fused_zarr(viewer, zarr_path, self._fused_channel_names(), self.log)
             napari.run()
         except Exception as e:
-            self.log(f"Error opening Napari: {e}")
-
+            self.log(f"Error opening Napari: {e}\n{traceback.format_exc()}")
 
     def compute_mip(self):
         """Compute and display max intensity projection in Napari."""
@@ -2423,7 +2253,6 @@ class StitcherGUI(QMainWindow):
         try:
             import napari
             import tensorstore as ts
-            import numpy as np
 
             zarr_path = Path(self.output_path)
             if self.is_multi_region and self.regions:
@@ -2450,7 +2279,6 @@ class StitcherGUI(QMainWindow):
             viewer = napari.Viewer()
             n_channels = shape[1]
 
-            channel_colors = ["blue", "green", "yellow", "red", "magenta", "cyan"]
             for c in range(n_channels):
                 # Compute MIP one z-plane at a time to avoid OOM
                 mip = None
@@ -2463,13 +2291,13 @@ class StitcherGUI(QMainWindow):
                 viewer.add_image(
                     mip,
                     name=f"MIP Ch{c}",
-                    colormap=channel_colors[c % len(channel_colors)],
+                    colormap=CHANNEL_COLORS[c % len(CHANNEL_COLORS)],
                     blending="additive",
                 )
                 del mip
             napari.run()
         except Exception as e:
-            self.log(f"Error computing MIP: {e}")
+            self.log(f"Error computing MIP: {e}\n{traceback.format_exc()}")
 
     def open_existing_in_napari(self):
         """Load a previously stitched output so Napari/MIP buttons work."""
@@ -2511,6 +2339,100 @@ class StitcherGUI(QMainWindow):
         self.log(f"Loaded: {folder}")
         if self.is_multi_region:
             self.log(f"Regions: {', '.join(self.regions)}")
+
+
+def auto_contrast(data, pmax=99.9):
+    """Contrast limits for fluorescence: histogram-mode background, percentile top."""
+    flat = data.ravel()
+    if len(flat) > 100000:
+        flat = np.random.choice(flat, 100000, replace=False)
+    hist, bin_edges = np.histogram(flat, bins=256)
+    mode_idx = np.argmax(hist)
+    mode_val = (bin_edges[mode_idx] + bin_edges[mode_idx + 1]) / 2
+    background_pixels = flat[flat <= np.median(flat)]
+    bg_std = np.std(background_pixels) if len(background_pixels) > 0 else mode_val * 0.1
+    lo = mode_val + 2 * bg_std
+    hi = np.percentile(data, pmax)
+    if hi - lo < 10:
+        hi = lo + 100
+    return [float(lo), float(hi)]
+
+
+def dtype_range(dtype):
+    """Valid display range for a numpy dtype."""
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        return [info.min, info.max]
+    elif np.issubdtype(dtype, np.floating):
+        return [0.0, 1.0]
+    return [0, 65535]
+
+
+class _TSArray:
+    """Minimal lazy array view over a tensorstore handle, for dask.from_array.
+
+    Exposes shape/dtype/ndim and returns numpy only for the slice dask requests,
+    so napari pages chunks on demand instead of reading whole volumes.
+    """
+
+    def __init__(self, store):
+        self._store = store
+        self.shape = tuple(store.shape)
+        self.dtype = store.dtype.numpy_dtype
+        self.ndim = len(self.shape)
+
+    def __getitem__(self, idx):
+        return np.asarray(self._store[idx].read().result())
+
+
+def _add_fused_zarr(viewer, zarr_path, channel_names, log):
+    """Add a fused OME-Zarr as lazy, multiscale, per-channel layers.
+
+    Opens scale*/image with tensorstore (the same engine that wrote the store, so
+    it always reads our Zarr v3 output) and wraps each level in a dask array.
+    napari pages only the chunk/level it renders, so RAM stays flat regardless of
+    dataset size — no full-volume read into numpy, no ome-zarr version dependency.
+    """
+    import tensorstore as ts
+    import dask.array as da
+
+    levels = []
+    for scale_dir in sorted(Path(zarr_path).glob("scale*")):
+        image_path = scale_dir / "image"
+        if image_path.exists():
+            store = ts.open(
+                {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(image_path)}}
+            ).result()
+            shp = tuple(store.shape)
+            # Chunk Y/X by one codec chunk, 1 elsewhere — lazy, storage-aligned reads.
+            chunks = tuple([1] * (len(shp) - 2)) + (min(1024, shp[-2]), min(1024, shp[-1]))
+            levels.append(da.from_array(_TSArray(store), chunks=chunks))
+
+    if not levels:
+        log(f"No scale*/image data found in {zarr_path}")
+        return
+
+    shape = levels[0].shape  # (T, C, Z, Y, X) or (T, C, Y, X)
+    is_5d = len(shape) == 5
+    n_channels = shape[1] if len(shape) >= 4 else 1
+    for c in range(n_channels):
+        pyramid = [lvl[:, c] for lvl in levels]  # lazy slice -> (T, Z, Y, X) per level
+        sample = pyramid[-1][pyramid[-1].shape[0] // 2]  # smallest level, middle T
+        if is_5d:
+            sample = sample[sample.shape[0] // 2]  # middle Z -> single (Y, X) plane
+        contrast = auto_contrast(np.asarray(sample))
+        name = channel_names[c] if channel_names and c < len(channel_names) else f"Channel {c}"
+        layer = viewer.add_image(
+            pyramid,
+            multiscale=True,
+            name=name,
+            colormap=CHANNEL_COLORS[c % len(CHANNEL_COLORS)],
+            blending="additive",
+            contrast_limits=contrast,
+        )
+        layer.contrast_limits_range = dtype_range(pyramid[-1].dtype)
+
+    viewer.dims.axis_labels = ("t", "z", "y", "x") if is_5d else ("t", "y", "x")
 
 
 def main():

@@ -147,3 +147,28 @@ def plot_swimlanes(records, out_path, n_lanes=8):
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
+
+
+def plot_timeline_overlay(before, after, out_path, before_peak=None, after_peak=None):
+    """Overlay two RSS-vs-time series (before vs after optimization).
+
+    `before`/`after` are lists of (t_s, rss_mb).
+    """
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    if before:
+        bx, by = zip(*before)
+        ax.plot(bx, by, color="#b0676f", linewidth=1.8, label="before")
+    if after:
+        ax_, ay = zip(*after)
+        ax.plot(ax_, ay, color="#26a69a", linewidth=1.8, label="after")
+    if before_peak is not None:
+        ax.axhline(before_peak, color="#b0676f", linestyle=":", linewidth=1)
+    if after_peak is not None:
+        ax.axhline(after_peak, color="#26a69a", linestyle=":", linewidth=1)
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel("Memory (MB)")
+    ax.set_title("Memory footprint: before vs after optimization")
+    ax.legend(fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
