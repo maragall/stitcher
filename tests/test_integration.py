@@ -93,7 +93,6 @@ class TestTileFusionIntegration:
             blend_pixels=(0, 0),
             downsample_factors=(1, 1),
             ssim_window=7,
-            threshold=0.3,
             multiscale_factors=(2,),
         )
         tf.run()
@@ -136,7 +135,6 @@ class TestTileFusionIntegration:
             output_path=output_path,
             blend_pixels=(10, 10),
             downsample_factors=(1, 1),
-            threshold=0.3,
             multiscale_factors=(2,),
         )
         tf.run()
@@ -187,7 +185,6 @@ class TestTileFusionIntegration:
             output_path=output_path,
             blend_pixels=(5, 5),
             downsample_factors=(1, 1),
-            threshold=0.2,
             multiscale_factors=(2,),
         )
         tf.run()
@@ -216,12 +213,13 @@ class TestTileFusionIntegration:
             data_path,
             output_path=output_path,
             blend_pixels=(0, 0),
-            threshold=1.0,  # High threshold effectively disables registration
             multiscale_factors=(2,),
         )
-        tf.run()
+        tf.run(register=False)
 
         assert output_path.exists()
+        assert tf.pairwise_metrics == {}
+        assert np.all(np.asarray(tf.global_offsets) == 0)
 
     def test_multichannel(self, tmp_path):
         """Test fusion with multiple channels."""
@@ -260,7 +258,6 @@ class TestTileFusionIntegration:
             data_path,
             output_path=output_path,
             blend_pixels=(0, 0),
-            threshold=0.3,
             channel_to_use=0,  # Register on first channel
             multiscale_factors=(2,),
         )
@@ -304,7 +301,6 @@ class TestRegistrationAccuracy:
             blend_pixels=(0, 0),
             downsample_factors=(1, 1),
             ssim_window=7,
-            threshold=0.3,
             multiscale_factors=(2,),
         )
 

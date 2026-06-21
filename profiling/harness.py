@@ -137,7 +137,6 @@ def profile_registration_perpair(dataset: str, region: str = "manual0") -> PairP
         tf.refine_tile_positions_with_cross_correlation(
             downsample_factors=tf.downsample_factors,
             ch_idx=tf.channel_to_use,
-            threshold=tf.threshold,
         )
 
     if not rec.records:

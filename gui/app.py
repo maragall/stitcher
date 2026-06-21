@@ -429,7 +429,6 @@ def _run_fusion_pipeline(
         reg_time = time.time() - step_start
         log(f"Registration complete: {len(tf.pairwise_metrics)} pairs [{reg_time:.1f}s]")
     else:
-        tf.threshold = 1.0
         log("Using stage positions (no registration)")
 
     step_start = time.time()
@@ -677,7 +676,6 @@ class FusionWorker(QThread):
                         f"Registration: {len(tf.pairwise_metrics)} pairs [{reg_time:.1f}s]"
                     )
                 else:
-                    tf.threshold = 1.0
                     self.progress.emit("Using stage positions (no registration)")
 
                 # Optimize

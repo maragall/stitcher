@@ -39,14 +39,14 @@ def register_pair_worker(args: Tuple) -> Tuple:
     Parameters
     ----------
     args : tuple
-        (i_pos, j_pos, patch_i, patch_j, df, sw, th, max_shift)
+        (i_pos, j_pos, patch_i, patch_j, df, sw, max_shift)
 
     Returns
     -------
     tuple
         (i_pos, j_pos, dy_s, dx_s, score) or (i_pos, j_pos, None, None, None) on failure
     """
-    i_pos, j_pos, patch_i, patch_j, df, sw, th, max_shift = args
+    i_pos, j_pos, patch_i, patch_j, df, sw, max_shift = args
 
     try:
         # Downsample, then run the SHARED kernel (register_and_score) so the batched
@@ -206,7 +206,6 @@ def register_pairs_batched(
     read_region: Callable,
     df: Tuple[int, int],
     sw: int,
-    th: float,
     max_shift: Tuple[int, int],
     max_workers: int,
     *,
@@ -259,7 +258,7 @@ def register_pairs_batched(
             patches = list(io_executor.map(read_pair_patches, batch))
 
         work_items = [
-            (i, j, pi, pj, df, sw, th, max_shift)
+            (i, j, pi, pj, df, sw, max_shift)
             for i, j, pi, pj in patches
             if pi is not None
         ]
@@ -290,7 +289,6 @@ def register_pairs_readahead(
     read_region: Callable,
     df: Tuple[int, int],
     sw: int,
-    th: float,
     max_shift: Tuple[int, int],
     *,
     debug: bool = False,

@@ -24,8 +24,8 @@ class TestRegisterPairWorker:
         ref = (rng.random((128, 128)).astype(np.float32) * 1000)
         dy_true, dx_true = 2.6, -1.3
         moving = nd_shift(ref, (-dy_true, -dx_true), order=3, mode="nearest").astype(np.float32)
-        # args: (i, j, patch_i, patch_j, df, sw, th, max_shift)
-        i, j, dy, dx, score = register_pair_worker((0, 1, ref, moving, (1, 1), 7, 0.0, (100, 100)))
+        # args: (i, j, patch_i, patch_j, df, sw, max_shift)
+        i, j, dy, dx, score = register_pair_worker((0, 1, ref, moving, (1, 1), 7, (100, 100)))
         assert dy is not None and dx is not None
         assert isinstance(dy, float) and isinstance(dx, float)
         # int-cast would make both exact integers; sub-pixel offset must produce a fraction

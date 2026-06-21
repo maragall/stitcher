@@ -63,8 +63,6 @@ class TileFusion:
         Block-reduce factors for registration.
     ssim_window : int
         Window size for SSIM.
-    threshold : float
-        SSIM acceptance threshold.
     multiscale_factors : sequence of int
         Downsampling factors for multiscale.
     resolution_multiples : sequence
@@ -88,7 +86,6 @@ class TileFusion:
         blend_pixels: Tuple[int, int] = (0, 0),
         downsample_factors: Tuple[int, int] = (1, 1),
         ssim_window: int = 15,
-        threshold: float = 0.5,
         multiscale_factors: Sequence[int] = (2, 4, 8, 16),
         resolution_multiples: Sequence[Union[int, Sequence[int]]] = (
             (1, 1),
@@ -115,7 +112,6 @@ class TileFusion:
         self._configure_registration_params(
             downsample_factors,
             ssim_window,
-            threshold,
             multiscale_factors,
             resolution_multiples,
             max_workers,
@@ -217,7 +213,6 @@ class TileFusion:
         self,
         downsample_factors: Tuple[int, int],
         ssim_window: int,
-        threshold: float,
         multiscale_factors: Sequence[int],
         resolution_multiples: Sequence[Union[int, Sequence[int]]],
         max_workers: int,
@@ -231,7 +226,6 @@ class TileFusion:
         # Configuration
         self.downsample_factors = tuple(downsample_factors)
         self.ssim_window = int(ssim_window)
-        self.threshold = float(threshold)
         self.multiscale_factors = tuple(multiscale_factors)
         self.resolution_multiples = [
             r if hasattr(r, "__len__") else (r, r) for r in resolution_multiples
@@ -567,7 +561,6 @@ class TileFusion:
         downsample_factors: Tuple[int, int] = None,
         ssim_window: int = None,
         ch_idx: int = 0,
-        threshold: float = None,
         parallel: Optional[bool] = None,
     ) -> None:
         """
@@ -582,7 +575,6 @@ class TileFusion:
         """
         df = downsample_factors or self.downsample_factors
         sw = ssim_window or self.ssim_window
-        th = threshold if threshold is not None else self.threshold
         self.pairwise_metrics.clear()
 
         max_shift = (100, 100)
@@ -611,12 +603,12 @@ class TileFusion:
 
         if use_parallel:
             results = register_pairs_batched(
-                pair_bounds, self._read_tile_region, df, sw, th, max_shift,
+                pair_bounds, self._read_tile_region, df, sw, max_shift,
                 self._max_workers, debug=self._debug,
             )
         else:
             results = register_pairs_readahead(
-                pair_bounds, self._read_tile_region, df, sw, th, max_shift,
+                pair_bounds, self._read_tile_region, df, sw, max_shift,
                 debug=self._debug,
             )
         self.pairwise_metrics.update(results)
@@ -911,22 +903,31 @@ class TileFusion:
     # Main pipeline
     # -------------------------------------------------------------------------
 
-    def run(self) -> None:
-        """Execute the full tile fusion pipeline end-to-end."""
+    def run(self, register: bool = True) -> None:
+        """Execute the full tile fusion pipeline end-to-end.
+
+        Parameters
+        ----------
+        register : bool
+            If False, skip registration entirely and fuse at the reported stage
+            positions. The existing empty-metrics path in optimize_shifts then
+            zero-fills all offsets, so tiles are placed at their raw stage
+            coordinates.
+        """
         metrics_path = self.tiff_path.parent / self.metrics_filename
 
-        try:
-            self.load_pairwise_metrics(metrics_path)
-            print(f"Loaded {len(self.pairwise_metrics)} pairwise metrics from {metrics_path}")
-        except FileNotFoundError:
-            print("Computing pairwise registration metrics...")
-            self.refine_tile_positions_with_cross_correlation(
-                downsample_factors=self.downsample_factors,
-                ch_idx=self.channel_to_use,
-                threshold=self.threshold,
-            )
-            self.save_pairwise_metrics(metrics_path)
-            print(f"Saved {len(self.pairwise_metrics)} pairwise metrics to {metrics_path}")
+        if register:
+            try:
+                self.load_pairwise_metrics(metrics_path)
+                print(f"Loaded {len(self.pairwise_metrics)} pairwise metrics from {metrics_path}")
+            except FileNotFoundError:
+                print("Computing pairwise registration metrics...")
+                self.refine_tile_positions_with_cross_correlation(
+                    downsample_factors=self.downsample_factors,
+                    ch_idx=self.channel_to_use,
+                )
+                self.save_pairwise_metrics(metrics_path)
+                print(f"Saved {len(self.pairwise_metrics)} pairwise metrics to {metrics_path}")
 
         if len(self.pairwise_metrics) == 0:
             print("No overlapping tile pairs found. Using stage positions directly.")
@@ -1008,7 +1009,6 @@ class TileFusion:
                 blend_pixels=self._blend_pixels,
                 downsample_factors=self.downsample_factors,
                 ssim_window=self.ssim_window,
-                threshold=self.threshold,
                 multiscale_factors=self.multiscale_factors,
                 resolution_multiples=self.resolution_multiples,
                 max_workers=self._max_workers,
