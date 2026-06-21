@@ -7,7 +7,68 @@ from tilefusion.optimization import (
     solve_least_squares,
     two_round_optimization,
     _edges_from_pairwise_metrics,
+    fit_stage_to_image_transform,
 )
+
+
+def _grid_with_injected_transform(n=6, step=795.0, ps=(0.325, 0.325),
+                                  scale_err=0.017, rot_deg=0.5, jitter=3.0, seed=0,
+                                  drop_tile=None):
+    """A grid whose true stage->image map is a KNOWN similarity (scale+rotation)+jitter.
+
+    Returns (pairwise_metrics, positions, ps, M_true, dropped). Pairs touching
+    `drop_tile` are omitted, simulating a tile whose overlaps could not register.
+    """
+    rng = np.random.default_rng(seed)
+    pos = [(r * step, c * step) for r in range(n) for c in range(n)]
+    P = np.array(pos, dtype=np.float64)
+    s = (1.0 + scale_err) / ps[0]
+    th = np.radians(rot_deg)
+    R = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+    M_true = s * R
+    idx = lambda r, c: r * n + c
+    pm = {}
+    for r in range(n):
+        for c in range(n):
+            for dr, dc in [(0, 1), (1, 0)]:
+                r2, c2 = r + dr, c + dc
+                if r2 < n and c2 < n:
+                    i, j = idx(r, c), idx(r2, c2)
+                    if drop_tile in (i, j):
+                        continue
+                    sd = P[j] - P[i]
+                    measured = M_true @ sd + rng.normal(0, jitter, 2)
+                    res = measured - sd / np.array(ps)
+                    pm[(i, j)] = (float(res[0]), float(res[1]), 0.9)
+    return pm, pos, ps, M_true, drop_tile
+
+
+class TestFitStageToImageTransform:
+    """Ground-truth test of the global stage->image affine: inject a KNOWN scale +
+    rotation + jitter and require the fit to recover it and to place tiles (incl. a
+    tile with no registered pairs) back to ground truth."""
+
+    def test_recovers_injected_scale_and_rotation(self):
+        pm, pos, ps, M_true, _ = _grid_with_injected_transform(scale_err=0.017, rot_deg=0.5, jitter=3.0)
+        out = fit_stage_to_image_transform(pm, pos, ps)
+        true_scale = (1.017) / ps[0]
+        np.testing.assert_allclose(out["scale"], true_scale, rtol=1e-2)
+        assert abs(out["rotation_deg"] - 0.5) < 0.1, out["rotation_deg"]
+        assert abs(out["anisotropy"] - 1.0) < 0.02, out["anisotropy"]
+        # residual after the fit should be ~the injected jitter (not the systematic error)
+        assert out["residual_rms"] < 6.0, out["residual_rms"]
+
+    def test_places_stranded_tile_to_ground_truth(self):
+        # tile 14 has ALL its pairs dropped (cannot register) -- the fit from the OTHER
+        # pairs must still place it correctly, because the transform is global.
+        stranded = 14
+        pm, pos, ps, M_true, _ = _grid_with_injected_transform(drop_tile=stranded)
+        assert all(stranded not in k for k in pm), "stranded tile must have no pairs"
+        M = fit_stage_to_image_transform(pm, pos, ps)["M"]
+        P = np.array(pos, dtype=np.float64)
+        predicted = M @ (P[stranded] - P[0])
+        truth = M_true @ (P[stranded] - P[0])
+        assert np.linalg.norm(predicted - truth) < 8.0, np.linalg.norm(predicted - truth)
 
 
 class TestSolveLeastSquares:

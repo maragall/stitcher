@@ -275,3 +275,69 @@ def _edges_from_pairwise_metrics(
             }
         )
     return edges
+
+
+def fit_stage_to_image_transform(pairwise_metrics, tile_positions, pixel_size):
+    """Fit the global stage->image linear map from registered pairs.
+
+    The reported stage positions map to image pixels by a transform set by the
+    instrument (camera scale x magnification, and the sensor-vs-stage mounting
+    angle) -- a single 2x2 map shared by every tile, not a per-tile offset. The
+    pipeline's default model assumes a pure isotropic scale (1/pixel_size); when
+    the real map also has a rotation or a slightly different scale, that error is
+    systematic and grows with tile separation.
+
+    This fits the actual 2x2 map M (pixels = M @ stage_mm) by weighted least
+    squares over the registered pairs' measured relative displacements (reported
+    offset + recovered residual). Because displacements are relative, translation
+    cancels, so only the linear part is fit. The map then places EVERY tile --
+    including ones whose overlaps were too low-texture to register -- because the
+    map is a property of the instrument, not of any individual overlap.
+
+    Parameters
+    ----------
+    pairwise_metrics : dict
+        {(i, j): (dy, dx, score)} -- the registered relative residual shifts (px).
+    tile_positions : list of (y, x)
+        Reported stage positions (physical units, e.g. mm).
+    pixel_size : (py, px)
+        The current isotropic pixel size used to seed the reported offsets.
+
+    Returns
+    -------
+    dict with:
+        M : ndarray (2, 2)        the fitted stage->pixel linear map
+        scale : float             mean singular value (px per stage-unit)
+        rotation_deg : float      rotation component of M, in degrees
+        anisotropy : float        ratio of singular values (1.0 = isotropic)
+        residual_rms : float      RMS of the per-pair residual after the fit (px)
+        n_pairs : int
+    """
+    pos = np.asarray(tile_positions, dtype=np.float64)
+    ps = np.asarray(pixel_size, dtype=np.float64)
+    S, P, W = [], [], []
+    for (i, j), (dy, dx, score) in pairwise_metrics.items():
+        stage_disp = pos[j] - pos[i]
+        measured = stage_disp / ps + np.array([dy, dx], dtype=np.float64)
+        S.append(stage_disp)
+        P.append(measured)
+        W.append(np.sqrt(max(score, 1e-6)))
+    if len(S) < 2:
+        raise ValueError("need >=2 registered pairs to fit the stage->image transform")
+    S = np.asarray(S)
+    P = np.asarray(P)
+    w = np.asarray(W)[:, None]
+    # Weighted least squares: (w*P) = (w*S) @ Mt
+    Mt, *_ = np.linalg.lstsq(w * S, w * P, rcond=None)
+    M = Mt.T
+    resid = P - S @ Mt
+    U, sv, Vt = np.linalg.svd(M)
+    R = U @ Vt
+    return {
+        "M": M,
+        "scale": float(sv.mean()),
+        "rotation_deg": float(np.degrees(np.arctan2(R[1, 0], R[0, 0]))),
+        "anisotropy": float(sv[0] / sv[1]),
+        "residual_rms": float(np.sqrt((resid ** 2).sum(axis=1)).mean()),
+        "n_pairs": len(S),
+    }
