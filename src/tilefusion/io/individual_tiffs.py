@@ -4,13 +4,14 @@ Individual TIFFs format reader.
 Reads folder format with individual TIFF files per tile/channel and coordinates.csv.
 """
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 import tifffile
+
+from tilefusion.io._squid import load_acquisition_params
 
 
 def _detect_filename_pattern(image_folder: Path, tiff_files: list):
@@ -143,21 +144,7 @@ def load_individual_tiffs_metadata(folder_path: Path) -> Dict[str, Any]:
     Y, X = first_img.shape[-2:]
 
     # Load pixel size and z/t dimensions from acquisition parameters
-    params_path = folder_path / "acquisition parameters.json"
-    if params_path.exists():
-        with open(params_path) as f:
-            params = json.load(f)
-        magnification = params.get("objective", {}).get("magnification", 10.0)
-        sensor_pixel_um = params.get("sensor_pixel_size_um", 7.52)
-        pixel_size_um = sensor_pixel_um / magnification
-        n_z = params.get("Nz", 1)
-        n_t = params.get("Nt", 1)
-        dz_um = params.get("dz(um)", 1.0)
-    else:
-        pixel_size_um = 0.752  # Default for 10x
-        n_z = 1
-        n_t = 1
-        dz_um = 1.0
+    pixel_size_um, n_z, n_t, dz_um = load_acquisition_params(folder_path)
 
     pixel_size = (pixel_size_um, pixel_size_um)
 

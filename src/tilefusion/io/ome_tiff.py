@@ -154,10 +154,11 @@ def read_ome_tiff_region(
     tile_idx: int,
     y_slice: slice,
     x_slice: slice,
+    channel_idx: int = 0,
     tiff_handle: Optional[tifffile.TiffFile] = None,
 ) -> np.ndarray:
     """
-    Read a region of a tile from OME-TIFF.
+    Read a region of a tile from OME-TIFF for a single channel.
 
     Parameters
     ----------
@@ -167,6 +168,8 @@ def read_ome_tiff_region(
         Index of the tile.
     y_slice, x_slice : slice
         Region to read.
+    channel_idx : int, optional
+        Channel index to return (default 0).
     tiff_handle : TiffFile, optional
         Cached TiffFile handle for faster access. For repeated reads,
         keep the handle open and pass it here, or use TileFusion which
@@ -174,8 +177,8 @@ def read_ome_tiff_region(
 
     Returns
     -------
-    arr : ndarray of shape (C, h, w)
-        Tile region as float32.
+    arr : ndarray of shape (1, h, w)
+        Tile region for the requested channel as float32.
 
     Warning
     -------
@@ -199,4 +202,4 @@ def read_ome_tiff_region(
         arr = arr[np.newaxis, :, :]
     # Flip along Y axis to correct orientation
     arr = np.flip(arr, axis=-2)
-    return arr[:, y_slice, x_slice].astype(np.float32)
+    return arr[channel_idx : channel_idx + 1, y_slice, x_slice].astype(np.float32)

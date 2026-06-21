@@ -21,6 +21,7 @@ from .zarr import (
     write_ngff_metadata,
     write_scale_group_metadata,
 )
+from .base import Reader, open_reader
 
 __all__ = [
     "load_ome_tiff_metadata",
@@ -38,4 +39,6 @@ __all__ = [
     "create_zarr_store",
     "write_ngff_metadata",
     "write_scale_group_metadata",
+    "Reader",
+    "open_reader",
 ]

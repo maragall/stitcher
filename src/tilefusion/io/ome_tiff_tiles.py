@@ -5,13 +5,14 @@ Reads folder format with one OME-TIFF file per tile (all channels in one file).
 Files are in ome_tiff/ subfolder with naming: {region}_{fov}.ome.tiff
 """
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
 import tifffile
+
+from tilefusion.io._squid import channel_names_or_default, load_acquisition_params
 
 
 def load_ome_tiff_tiles_metadata(folder_path: Path) -> Dict[str, Any]:
@@ -141,25 +142,18 @@ def load_ome_tiff_tiles_metadata(folder_path: Path) -> Dict[str, Any]:
     except Exception:
         pass
 
-    if not channel_names:
-        channel_names = [f"Channel_{i}" for i in range(channels)]
+    channel_names = channel_names_or_default(channel_names, channels)
 
-    # Load acquisition parameters
-    params_path = folder_path / "acquisition parameters.json"
-    if params_path.exists():
-        with open(params_path) as f:
-            params = json.load(f)
-        magnification = params.get("objective", {}).get("magnification", 10.0)
-        sensor_pixel_um = params.get("sensor_pixel_size_um", 7.52)
-        pixel_size_um = sensor_pixel_um / magnification
-        n_z = params.get("Nz", 1)
-        n_t = params.get("Nt", 1)
-        dz_um = params.get("dz(um)", 1.0)
+    # Load acquisition parameters.
+    # When the JSON is present, use its Nz/Nt; otherwise fall back to the
+    # dimensions reported by the TIFF itself (file_n_z / file_n_t).
+    pixel_size_um, n_z_json, n_t_json, dz_um = load_acquisition_params(folder_path)
+    if (folder_path / "acquisition parameters.json").exists():
+        n_z = n_z_json
+        n_t = n_t_json
     else:
-        pixel_size_um = 0.752
         n_z = file_n_z
         n_t = file_n_t
-        dz_um = 1.0
 
     pixel_size = (pixel_size_um, pixel_size_um)
 

@@ -40,18 +40,9 @@ from .fusion import accumulate_tile_shard, normalize_shard
 from .optimization import links_from_pairwise_metrics, solve_global, two_round_optimization
 from .flatfield import apply_flatfield, apply_flatfield_region
 from .io import (
-    load_ome_tiff_metadata,
-    load_individual_tiffs_metadata,
-    load_ome_tiff_tiles_metadata,
-    load_zarr_metadata,
+    open_reader,
     read_ome_tiff_tile,
     read_ome_tiff_region,
-    read_individual_tiffs_tile,
-    read_individual_tiffs_region,
-    read_ome_tiff_tiles_tile,
-    read_ome_tiff_tiles_region,
-    read_zarr_tile,
-    read_zarr_region,
     create_zarr_store,
     write_ngff_metadata,
     write_scale_group_metadata,
@@ -129,38 +120,12 @@ class TileFusion:
             else self.tiff_path.parent / f"{self.tiff_path.stem}_fused.ome.zarr"
         )
 
-        # Detect and load format
-        self._is_zarr_format = False
-        self._is_individual_tiffs_format = False
-        self._is_ome_tiff_tiles_format = False
-        self._metadata = {}
-
-        if self.tiff_path.is_dir():
-            # Check for ome_tiff tiles format first (ome_tiff/ folder with .ome.tiff files)
-            ome_tiff_folder = self.tiff_path / "ome_tiff"
-            if ome_tiff_folder.exists() and list(ome_tiff_folder.glob("*.ome.tiff"))[:1]:
-                self._is_ome_tiff_tiles_format = True
-                self._metadata = load_ome_tiff_tiles_metadata(self.tiff_path)
-            else:
-                zarr_json = self.tiff_path / "zarr.json"
-                if zarr_json.exists():
-                    with open(zarr_json) as f:
-                        meta = json.load(f)
-                    if "attributes" in meta and "per_index_metadata" in meta.get("attributes", {}):
-                        self._is_zarr_format = True
-                        self._metadata = load_zarr_metadata(self.tiff_path)
-                    else:
-                        self._is_individual_tiffs_format = True
-                        self._metadata = load_individual_tiffs_metadata(self.tiff_path)
-                else:
-                    self._is_individual_tiffs_format = True
-                    self._metadata = load_individual_tiffs_metadata(self.tiff_path)
-        else:
-            self._metadata = load_ome_tiff_metadata(self.tiff_path)
-            # Close the metadata handle immediately - we use thread-local handles
-            # for thread-safe concurrent reads instead of sharing this handle.
-            if "tiff_handle" in self._metadata:
-                self._metadata.pop("tiff_handle").close()
+        # Detect the input format and load its metadata via the unified reader.
+        # The reader encapsulates format detection, the per-format metadata
+        # loaders, and (for single OME-TIFF) the immediate handle close that
+        # core used to do inline.
+        self._reader = open_reader(self.tiff_path)
+        self._metadata = self._reader.load_metadata()
 
         # Extract common properties
         self.n_tiles = self._metadata["n_tiles"]
@@ -360,12 +325,8 @@ class TileFusion:
         tifffile.TiffFile or None
             Thread-local handle for OME-TIFF files, None for other formats.
         """
-        # Only applies to OME-TIFF format (not zarr, individual tiffs, etc.)
-        if (
-            self._is_zarr_format
-            or self._is_individual_tiffs_format
-            or self._is_ome_tiff_tiles_format
-        ):
+        # Only applies to single OME-TIFF format (not zarr, individual tiffs, etc.)
+        if self._reader.is_multi_file:
             return None
 
         # Check if this thread already has a valid (open) handle.
@@ -474,32 +435,11 @@ class TileFusion:
         if time_idx is None:
             time_idx = self._registration_t  # Default to registration timepoint
 
-        if self._is_zarr_format:
-            zarr_ts = self._metadata["tensorstore"]
-            is_3d = self._metadata.get("is_3d", False)
-            tile = read_zarr_tile(zarr_ts, tile_idx, is_3d)
-        elif self._is_individual_tiffs_format:
-            tile = read_individual_tiffs_tile(
-                self._metadata["image_folder"],
-                self._metadata["channel_names"],
-                self._metadata["tile_identifiers"],
-                tile_idx,
-                z_level=z_level,
-                time_idx=time_idx,
-                time_folders=self._time_folders,
-            )
-        elif self._is_ome_tiff_tiles_format:
-            tile = read_ome_tiff_tiles_tile(
-                self._metadata["ome_tiff_folder"],
-                self._metadata["tile_identifiers"],
-                self._metadata["tile_file_map"],
-                tile_idx,
-                self._metadata["axes"],
-                z_level=z_level,
-                time_idx=time_idx,
-            )
+        if self._reader.is_multi_file:
+            tile = self._reader.read_tile(tile_idx, z_level=z_level, time_idx=time_idx)
         else:
-            # Use thread-local handle for thread-safe concurrent reads
+            # Single OME-TIFF: use core's thread-local handle for thread-safe
+            # concurrent reads (the reader cannot manage per-thread handles).
             handle = self._get_thread_local_handle()
             tile = read_ome_tiff_tile(self.tiff_path, tile_idx, handle)
 
@@ -528,42 +468,25 @@ class TileFusion:
         if time_idx is None:
             time_idx = self._registration_t  # Default to registration timepoint
 
-        if self._is_zarr_format:
-            zarr_ts = self._metadata["tensorstore"]
-            is_3d = self._metadata.get("is_3d", False)
-            region = read_zarr_region(
-                zarr_ts, tile_idx, y_slice, x_slice, self.channel_to_use, is_3d
-            )
-        elif self._is_individual_tiffs_format:
-            region = read_individual_tiffs_region(
-                self._metadata["image_folder"],
-                self._metadata["channel_names"],
-                self._metadata["tile_identifiers"],
+        if self._reader.is_multi_file:
+            region = self._reader.read_region(
                 tile_idx,
                 y_slice,
                 x_slice,
-                self.channel_to_use,
-                z_level=z_level,
-                time_idx=time_idx,
-                time_folders=self._time_folders,
-            )
-        elif self._is_ome_tiff_tiles_format:
-            region = read_ome_tiff_tiles_region(
-                self._metadata["ome_tiff_folder"],
-                self._metadata["tile_identifiers"],
-                self._metadata["tile_file_map"],
-                tile_idx,
-                self._metadata["axes"],
-                y_slice,
-                x_slice,
-                self.channel_to_use,
+                channel_idx=self.channel_to_use,
                 z_level=z_level,
                 time_idx=time_idx,
             )
         else:
-            # Use thread-local handle for thread-safe concurrent reads
+            # Single OME-TIFF: use core's thread-local handle for thread-safe
+            # concurrent reads (the reader cannot manage per-thread handles).
             handle = self._get_thread_local_handle()
-            region = read_ome_tiff_region(self.tiff_path, tile_idx, y_slice, x_slice, handle)
+            # Pass channel_to_use so the (1, h, w) result already holds the
+            # registration channel (this format is single-channel in practice,
+            # so it matches the old all-channel return for every real dataset).
+            region = read_ome_tiff_region(
+                self.tiff_path, tile_idx, y_slice, x_slice, self.channel_to_use, handle
+            )
 
         # Apply flatfield correction if enabled
         if self._flatfield is not None:
@@ -622,12 +545,7 @@ class TileFusion:
         if parallel is None:
             # Parallel helps for individual TIFFs (separate files)
             # but hurts for single-file OME-TIFF (I/O contention)
-            is_multi_file = (
-                self._is_zarr_format
-                or self._is_individual_tiffs_format
-                or self._is_ome_tiff_tiles_format
-            )
-            parallel = is_multi_file
+            parallel = self._reader.is_multi_file
 
         # Use parallel processing for CPU mode with enough pairs
         use_parallel = parallel and not USING_GPU and len(pair_bounds) > 4
