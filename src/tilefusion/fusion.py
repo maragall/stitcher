@@ -9,6 +9,7 @@ from typing import Callable, Tuple
 
 import numpy as np
 from numba import njit, prange
+from scipy.ndimage import shift as ndi_shift
 from tqdm import tqdm
 
 from .utils import USING_GPU, cp
@@ -151,8 +152,15 @@ def fuse_plane(
 
     pad_Y, pad_X = padded_shape
 
+    # Origins are fractional (the true registered sub-pixel positions). Split each into
+    # an integer floor -- used for all block geometry below -- and a sub-pixel remainder
+    # used to fractional-shift the tile content. This honours the sub-pixel registration
+    # instead of truncating it to whole pixels (the old int-cast that misaligned seams).
+    floor_origins = [(int(np.floor(oy)), int(np.floor(ox))) for (oy, ox) in origins]
+    fracs = [(oy - foy, ox - fox) for (oy, ox), (foy, fox) in zip(origins, floor_origins)]
+
     tile_bounds = [
-        (oy, oy + Y, ox, ox + X) for (oy, ox) in origins
+        (foy, foy + Y, fox, fox + X) for (foy, fox) in floor_origins
     ]
 
     n_blocks_y = (pad_Y + block_size - 1) // block_size
@@ -199,6 +207,14 @@ def fuse_plane(
             )
             for t_idx in iterator:
                 tile_all = read_tile(t_idx, z_level, time_idx)
+
+                # Honour the sub-pixel offset: shift the tile content by the fractional
+                # remainder (Y, X only; not the channel axis) before it is placed at the
+                # integer-floor origin. (Per-block full-tile shift -- a speed target for
+                # the later pass; correctness first.)
+                fy, fx = fracs[t_idx]
+                if fy or fx:
+                    tile_all = ndi_shift(tile_all, (0.0, fy, fx), order=1, mode="nearest")
 
                 ty0, ty1, tx0, tx1 = tile_bounds[t_idx]  # this FOV's rectangle on the plane
 

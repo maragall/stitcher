@@ -136,8 +136,50 @@ def test_direct_placement_streams_correctly(tmp_path):
     # Expected: place each FOV at its pixel origin in order, last writer wins.
     pad_Y, pad_X = tf.padded_shape
     expected = np.zeros((1, 1, 1, pad_Y, pad_X), dtype=np.uint16)
-    for (oy, ox), tile in zip(tf._tile_pixel_origins(), tiles):
+    for (oy_f, ox_f), tile in zip(tf._tile_pixel_origins(), tiles):
+        # origins are now sub-pixel floats; direct mode floors to integer placement
+        oy, ox = int(oy_f), int(ox_f)
         y_end, x_end = min(oy + tf.Y, pad_Y), min(ox + tf.X, pad_X)
         expected[0, 0, 0, oy:y_end, ox:x_end] = tile[: y_end - oy, : x_end - ox]
 
     np.testing.assert_array_equal(out, expected)
+
+
+def test_fuse_plane_honours_subpixel_offset():
+    """fuse_plane must place tiles at SUB-PIXEL precision, not truncate to integer.
+
+    A bright single pixel fused at a 0.5 px fractional y-origin must split across two
+    rows (bilinear), not land entirely in one -- this guards the sub-pixel placement
+    that the old _tile_pixel_origins int-cast destroyed. The existing equivalence tests
+    use integer offsets (frac=0), so they never exercise this path.
+    """
+    from tilefusion.fusion import fuse_plane
+
+    C, Y, X = 1, 8, 8
+    tile = np.zeros((C, Y, X), dtype=np.float32)
+    tile[0, 4, 4] = 1000.0
+    captured = {}
+
+    def read_tile(t, z, ti):
+        return tile
+
+    def write_block(y0, y1, x0, x1, arr):
+        captured["arr"] = np.asarray(arr)
+
+    fuse_plane(
+        read_tile=read_tile,
+        write_block=write_block,
+        origins=[(0.5, 0.0)],  # 0.5 px fractional y-origin
+        padded_shape=(16, 16),
+        tile_shape=(Y, X),
+        channels=C,
+        y_profile=np.ones(Y, dtype=np.float32),
+        x_profile=np.ones(X, dtype=np.float32),
+        block_size=16,
+    )
+    col = captured["arr"][0][:, 4]  # column through the bright pixel
+    # bright pixel at tile row 4, +0.5 px -> split between output rows 4 and 5
+    assert col[4] > 0 and col[5] > 0, f"0.5px shift should split across rows; got {col}"
+    assert abs(int(col[4]) - int(col[5])) < 250, f"0.5px split should be ~even; got {col[4]},{col[5]}"
+    # integer truncation would have dumped all 1000 into a single row:
+    assert col.max() < 900, f"value looks truncated to one row (max={col.max()})"

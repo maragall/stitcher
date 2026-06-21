@@ -741,12 +741,17 @@ class TileFusion:
     # Fusion
     # -------------------------------------------------------------------------
 
-    def _tile_pixel_origins(self) -> List[Tuple[int, int]]:
-        """Top-left (y, x) pixel position of each FOV on the plane."""
+    def _tile_pixel_origins(self) -> List[Tuple[float, float]]:
+        """Top-left (y, x) pixel position of each FOV on the plane (sub-pixel).
+
+        Returns FRACTIONAL positions so blended fusion can place tiles at sub-pixel
+        precision (honouring the registration instead of truncating it). Callers that
+        require integer placement (direct mode) floor locally.
+        """
         return [
             (
-                int((y - self.offset[0]) / self._pixel_size[0]),
-                int((x - self.offset[1]) / self._pixel_size[1]),
+                (y - self.offset[0]) / self._pixel_size[0],
+                (x - self.offset[1]) / self._pixel_size[1],
             )
             for (y, x) in self._tile_positions
         ]
@@ -786,7 +791,9 @@ class TileFusion:
             else range(len(offsets))
         )
         for t_idx in iterator:
-            oy, ox = offsets[t_idx]
+            # Direct mode is the no-blend, last-tile-wins fast path: integer placement
+            # (floor the sub-pixel origin). Sub-pixel placement is for blended fusion.
+            oy, ox = int(offsets[t_idx][0]), int(offsets[t_idx][1])
             tile_all = self._read_tile(t_idx, z_level=z_level, time_idx=time_idx)
 
             y_end = min(oy + self.Y, pad_Y)
