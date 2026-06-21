@@ -49,45 +49,30 @@ def register_pair_worker(args: Tuple) -> Tuple:
     i_pos, j_pos, patch_i, patch_j, df, sw, th, max_shift = args
 
     try:
-        # Downsample
+        # Downsample, then run the SHARED kernel (register_and_score) so the batched
+        # and read-ahead backends use identical phase-correlation parameters
+        # (incl. disambiguate=True). This path previously reimplemented the kernel
+        # inline WITHOUT disambiguate -- a silent backend mismatch.
         reduce_block = (1, df[0], df[1]) if patch_i.ndim == 3 else tuple(df)
         g1 = block_reduce(patch_i, reduce_block, np.mean)
         g2 = block_reduce(patch_j, reduce_block, np.mean)
 
-        # Squeeze to 2D if needed
-        while g1.ndim > 2 and g1.shape[0] == 1:
-            g1 = g1[0]
-            g2 = g2[0]
+        shift, ssim_val = register_and_score(g1, g2, win_size=sw)
+        if shift is None:
+            return (i_pos, j_pos, None, None, None)
 
-        # Match histograms
-        g2 = match_histograms(g2, g1)
-
-        # Phase cross-correlation (unified parameters with sequential path)
-        shift, _, _ = phase_cross_correlation(
-            g1.astype(np.float32),
-            g2.astype(np.float32),
-            normalization="phase",
-            upsample_factor=_UPSAMPLE_FACTOR,
-            overlap_ratio=_OVERLAP_RATIO,
-        )
-
-        # Apply shift and compute SSIM
-        g2s = shift_array(g2, shift_vec=shift)
-        ssim_val = compute_ssim(g1, g2s, win_size=sw)
-
-        # Scale shift back to original resolution
+        # Scale shift back to original resolution (sub-pixel)
         dy_s, dx_s = float(shift[0] * df[0]), float(shift[1] * df[1])
 
         # Reject shifts exceeding max_shift (likely spurious)
         if abs(dy_s) > max_shift[0] or abs(dx_s) > max_shift[1]:
             logger.debug(
-                "Pair (%d, %d): shift (%d, %d) exceeds max_shift %s — rejected",
+                "Pair (%d, %d): shift (%.2f, %.2f) exceeds max_shift %s — rejected",
                 i_pos, j_pos, dy_s, dx_s, max_shift,
             )
             return (i_pos, j_pos, None, None, None)
 
-        # Return SSIM as continuous score (used as weight in optimization)
-        # rather than applying a binary threshold gate
+        # SSIM is the continuous weight used in optimization (no binary gate)
         return (i_pos, j_pos, dy_s, dx_s, round(ssim_val, 3))
 
     except Exception as e:
