@@ -84,6 +84,38 @@ def test_chunked_equals_full_plane(tmp_path):
     np.testing.assert_array_equal(chunk_out, full_out)
 
 
+def test_chunked_equals_full_plane_feathered(tmp_path):
+    # Same as test_chunked_equals_full_plane but with feathered blending (blend_pixels>0),
+    # which exercises the block-boundary weight-profile slicing -- the path most at risk in
+    # the full/chunked merge. Must be byte-identical.
+    rng = np.random.default_rng(7)
+    ts_, ov = 200, 40
+    step = ts_ - ov
+    tiles = []
+    for _ in range(4):
+        t = rng.integers(100, 1000, size=(ts_, ts_), dtype=np.uint16)
+        t[60:140, 60:140] += 5000
+        tiles.append(t)
+    positions = [(0, 0), (0, step), (step, 0), (step, step)]
+
+    full_dir = tmp_path / "full_data"
+    chunk_dir = tmp_path / "chunk_data"
+    _write_dataset(full_dir, tiles, positions)
+    _write_dataset(chunk_dir, tiles, positions)
+
+    tf_full = TileFusion(full_dir, output_path=tmp_path / "full.zarr", blend_pixels=(20, 20))
+    _prelude(tf_full)
+    tf_full._fuse_tiles_full_plane()
+    full_out = _read_scale0(tf_full.output_path)
+
+    tf_chunk = TileFusion(chunk_dir, output_path=tmp_path / "chunk.zarr", blend_pixels=(20, 20))
+    _prelude(tf_chunk)
+    tf_chunk._fuse_tiles_chunked_plane()
+    chunk_out = _read_scale0(tf_chunk.output_path)
+
+    np.testing.assert_array_equal(chunk_out, full_out)
+
+
 def test_direct_placement_streams_correctly(tmp_path):
     # Direct mode = no blending: each FOV is placed (streamed) at its origin,
     # overlaps overwritten (last FOV wins). Pins the streaming placement.

@@ -4,8 +4,14 @@ Tile fusion algorithms.
 Numba-accelerated weighted blending and accumulation kernels.
 """
 
+import gc
+from typing import Callable, Tuple
+
 import numpy as np
 from numba import njit, prange
+from tqdm import tqdm
+
+from .utils import USING_GPU, cp
 
 
 @njit(parallel=True)
@@ -117,3 +123,116 @@ def blend_numba_2d(
             else:
                 out_f[y, x] = sub_i[y, x]
     return out_f
+
+
+def fuse_plane(
+    *,
+    read_tile: Callable,
+    write_block: Callable,
+    origins: list,
+    padded_shape: Tuple[int, int],
+    tile_shape: Tuple[int, int],
+    channels: int,
+    y_profile: np.ndarray,
+    x_profile: np.ndarray,
+    block_size: int,
+    z_level: int = 0,
+    time_idx: int = 0,
+    show_progress: bool = False,
+) -> None:
+    """Fuse one z/t plane block-by-block at fixed low memory.
+
+    The canonical fusion path. block_size sets the scratchpad size (memory budget):
+    a small block_size bounds peak memory; block_size >= max(padded_shape) is the
+    whole-plane case. Output is identical regardless of block_size (the full vs.
+    chunked equivalence, guarded by test_fuse_equivalence).
+    """
+    Y, X = tile_shape
+
+    pad_Y, pad_X = padded_shape
+
+    tile_bounds = [
+        (oy, oy + Y, ox, ox + X) for (oy, ox) in origins
+    ]
+
+    n_blocks_y = (pad_Y + block_size - 1) // block_size
+    n_blocks_x = (pad_X + block_size - 1) // block_size
+    total_blocks = n_blocks_y * n_blocks_x
+    C = channels
+
+    # Only announce block mode when there is actually more than one block; the
+    # whole-plane case (block_size >= plane) stays quiet, as it did before the merge.
+    if show_progress and total_blocks > 1:
+        print(f"Using chunked mode: {block_size}x{block_size} blocks")
+
+    # Reusable per-block accumulators (sized to the largest block); zeroed
+    # and sub-viewed per block instead of re-allocated each iteration.
+    max_bh = min(block_size, pad_Y)
+    max_bw = min(block_size, pad_X)
+    fused_buf = np.zeros((C, max_bh, max_bw), dtype=np.float32)
+    weight_buf = np.zeros((C, max_bh, max_bw), dtype=np.float32)
+
+    block_idx = 0
+    for block_y in range(0, pad_Y, block_size):
+        for block_x in range(0, pad_X, block_size):
+            block_idx += 1
+            by_end = min(block_y + block_size, pad_Y)
+            bx_end = min(block_x + block_size, pad_X)
+            bh, bw = by_end - block_y, bx_end - block_x
+
+            overlapping = []
+            for t_idx, (ty0, ty1, tx0, tx1) in enumerate(tile_bounds):
+                if ty1 > block_y and ty0 < by_end and tx1 > block_x and tx0 < bx_end:
+                    overlapping.append(t_idx)
+
+            if not overlapping:
+                continue
+
+            fused_block = fused_buf[:, :bh, :bw]
+            weight_sum = weight_buf[:, :bh, :bw]
+            fused_block[...] = 0.0
+            weight_sum[...] = 0.0
+
+            desc = f"block {block_idx}/{total_blocks}"
+            iterator = (
+                tqdm(overlapping, desc=desc, leave=False) if show_progress else overlapping
+            )
+            for t_idx in iterator:
+                tile_all = read_tile(t_idx, z_level, time_idx)
+
+                ty0, ty1, tx0, tx1 = tile_bounds[t_idx]  # this FOV's rectangle on the plane
+
+                # Intersection of FOV and block, expressed two ways:
+                # destination box in BLOCK-local coords (where it lands in fused_block)...
+                oy0 = max(ty0, block_y) - block_y
+                oy1 = min(ty1, by_end) - block_y
+                ox0 = max(tx0, block_x) - block_x
+                ox1 = min(tx1, bx_end) - block_x
+
+                # ...and the same region in FOV-local coords (which pixels of the FOV to read).
+                sy0 = max(block_y - ty0, 0)
+                sy1 = sy0 + (oy1 - oy0)
+                sx0 = max(block_x - tx0, 0)
+                sx1 = sx0 + (ox1 - ox0)
+
+                # Feather weight for exactly this FOV-local sub-region (A1's window, sliced).
+                w2d = y_profile[sy0:sy1, None] * x_profile[None, sx0:sx1]
+
+                # Same blend kernel as the whole-plane path: accumulate this FOV's
+                # sub-region into the block at its block-local origin (oy0, ox0).
+                accumulate_tile_shard(
+                    fused_block, weight_sum, tile_all[:, sy0:sy1, sx0:sx1], w2d, oy0, ox0
+                )
+
+            # One blend, shared with _fuse_tiles_full_plane: normalize in place,
+            # zero where no FOV covered (weight 0). No mask temporary.
+            normalize_shard(fused_block, weight_sum)
+
+            # Write to 5D output: (T, C, Z, Y, X)
+            write_block(block_y, by_end, block_x, bx_end, fused_block.astype(np.uint16))
+
+    del fused_buf, weight_buf
+    gc.collect()
+    if USING_GPU and cp is not None:
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
