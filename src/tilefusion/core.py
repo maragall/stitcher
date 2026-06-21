@@ -254,7 +254,7 @@ class TileFusion:
     def _init_pipeline_state(self) -> None:
         """Initialize the mutable registration/fusion pipeline state."""
         # State
-        self.pairwise_metrics: Dict[Tuple[int, int], Tuple[int, int, float]] = {}
+        self.pairwise_metrics: Dict[Tuple[int, int], Tuple[float, float, float]] = {}
         self.global_offsets: Optional[np.ndarray] = None
         self.offset: Optional[Tuple[float, float]] = None
         self.unpadded_shape: Optional[Tuple[int, int]] = None

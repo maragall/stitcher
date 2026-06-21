@@ -3,11 +3,37 @@
 import numpy as np
 import pytest
 
+from scipy.ndimage import shift as nd_shift
+
 from tilefusion.registration import (
     find_adjacent_pairs,
     compute_pair_bounds,
     register_and_score,
+    register_pair_worker,
 )
+
+
+class TestRegisterPairWorker:
+    """The batched-path kernel. Only the readahead path is exercised by the golden
+    fixture (<=4 pairs), so this pins the batched path's sub-pixel behaviour directly."""
+
+    def test_returns_subpixel_float(self):
+        # A known sub-pixel offset must survive as a float -- the int-cast (now removed)
+        # would have rounded both components to exact integers.
+        rng = np.random.default_rng(0)
+        ref = (rng.random((128, 128)).astype(np.float32) * 1000)
+        dy_true, dx_true = 2.6, -1.3
+        moving = nd_shift(ref, (-dy_true, -dx_true), order=3, mode="nearest").astype(np.float32)
+        # args: (i, j, patch_i, patch_j, df, sw, th, max_shift)
+        i, j, dy, dx, score = register_pair_worker((0, 1, ref, moving, (1, 1), 7, 0.0, (100, 100)))
+        assert dy is not None and dx is not None
+        assert isinstance(dy, float) and isinstance(dx, float)
+        # int-cast would make both exact integers; sub-pixel offset must produce a fraction
+        assert not (float(dy).is_integer() and float(dx).is_integer())
+        # and the recovered magnitude must be near the truth (sign/axis-robust)
+        np.testing.assert_allclose(
+            sorted([abs(dy), abs(dx)]), sorted([abs(dy_true), abs(dx_true)]), atol=0.2
+        )
 
 
 class TestFindAdjacentPairs:

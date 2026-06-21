@@ -76,7 +76,7 @@ def register_pair_worker(args: Tuple) -> Tuple:
         ssim_val = compute_ssim(g1, g2s, win_size=sw)
 
         # Scale shift back to original resolution
-        dy_s, dx_s = int(np.round(shift[0] * df[0])), int(np.round(shift[1] * df[1]))
+        dy_s, dx_s = float(shift[0] * df[0]), float(shift[1] * df[1])
 
         # Reject shifts exceeding max_shift (likely spurious)
         if abs(dy_s) > max_shift[0] or abs(dx_s) > max_shift[1]:
@@ -352,7 +352,7 @@ def register_pairs_readahead(
         score = float(max(ssim_val, 1e-6))
         # SSIM is used as continuous weight in optimization, not binary gate
 
-        dy_s, dx_s = [int(np.round(shift_ds[k] * df[k])) for k in range(2)]
+        dy_s, dx_s = [float(shift_ds[k] * df[k]) for k in range(2)]
 
         if abs(dy_s) > max_shift[0] or abs(dx_s) > max_shift[1]:
             if debug:
