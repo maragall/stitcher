@@ -9,6 +9,7 @@ import traceback
 from pathlib import Path
 
 import numpy as np
+from scipy.ndimage import shift as ndi_shift
 
 # Per-channel display colors, shared by every napari layer path.
 CHANNEL_COLORS = ["blue", "green", "yellow", "red", "magenta", "cyan"]
@@ -298,14 +299,12 @@ class PreviewWorker(QThread):
                 grid_row, grid_col = selected_grid_pos[i]
                 color = get_color(grid_row, grid_col)
 
-                oy_before = int(round((pos[0] - min_y) / pixel_size[0]))
-                ox_before = int(round((pos[1] - min_x) / pixel_size[1]))
-                oy_after = oy_before + int(global_offsets[i][0])
-                ox_after = ox_before + int(global_offsets[i][1])
-
                 th, tw = arr_norm.shape
 
-                # BEFORE
+                # BEFORE: raw stage positions (integer placement; this panel shows the
+                # uncorrected misalignment, so sub-pixel doesn't apply here).
+                oy_before = int(round((pos[0] - min_y) / pixel_size[0]))
+                ox_before = int(round((pos[1] - min_x) / pixel_size[1]))
                 y1, y2 = max(0, oy_before), min(oy_before + th, h)
                 x1, x2 = max(0, ox_before), min(ox_before + tw, w)
                 if y2 > y1 and x2 > x1:
@@ -315,16 +314,27 @@ class PreviewWorker(QThread):
                             arr_norm[:tile_h, :tile_w] * color[c]
                         ).astype(np.uint8)
 
-                # AFTER
-                y1, y2 = max(0, oy_after), min(oy_after + th, h)
-                x1, x2 = max(0, ox_after), min(ox_after + tw, w)
+                # AFTER: registered position placed at SUB-PIXEL precision. The
+                # registered pixel position is fractional; truncating it to int
+                # (the old behaviour) reintroduces up to ~1 px of seam misalignment
+                # -- the same int-cast the fusion path still has. Place at the integer
+                # floor after fractional-shifting the tile so the sub-pixel offset is
+                # honoured.
+                oy_f = (pos[0] - min_y) / pixel_size[0] + float(global_offsets[i][0])
+                ox_f = (pos[1] - min_x) / pixel_size[1] + float(global_offsets[i][1])
+                oy0, ox0 = int(np.floor(oy_f)), int(np.floor(ox_f))
+                fy, fx = oy_f - oy0, ox_f - ox0
+                arr_sub = ndi_shift(arr_norm, (fy, fx), order=1, mode="constant", cval=0.0)
+                raw_sub = ndi_shift(arr_raw, (fy, fx), order=1, mode="constant", cval=0.0)
+                y1, y2 = max(0, oy0), min(oy0 + th, h)
+                x1, x2 = max(0, ox0), min(ox0 + tw, w)
                 if y2 > y1 and x2 > x1:
                     tile_h, tile_w = y2 - y1, x2 - x1
                     for c in range(3):
                         color_after[y1:y2, x1:x2, c] = (
-                            arr_norm[:tile_h, :tile_w] * color[c]
+                            arr_sub[:tile_h, :tile_w] * color[c]
                         ).astype(np.uint8)
-                    fused[y1:y2, x1:x2] += arr_raw[:tile_h, :tile_w]
+                    fused[y1:y2, x1:x2] += raw_sub[:tile_h, :tile_w]
                     weight[y1:y2, x1:x2] += 1.0
 
             weight = np.maximum(weight, 1.0)
@@ -2179,7 +2189,23 @@ class StitcherGUI(QMainWindow):
                 color_after, name="AFTER registration (colored)", rgb=True, visible=False
             )
             if fused is not None:
-                viewer.add_image(fused, name="Fused result", colormap="gray", visible=False)
+                # The fused preview is a raw-intensity float image; without explicit
+                # contrast limits napari renders it black. Scale to the 1-99 percentile
+                # of the non-zero (tile) pixels, ignoring the zero background canvas.
+                nz = fused[fused > 0]
+                if nz.size:
+                    lo, hi = (float(v) for v in np.percentile(nz, [1, 99]))
+                else:
+                    lo, hi = 0.0, 1.0
+                if hi <= lo:
+                    hi = lo + 1.0
+                viewer.add_image(
+                    fused,
+                    name="Fused result",
+                    colormap="gray",
+                    contrast_limits=[lo, hi],
+                    visible=False,
+                )
             napari.run()
         except Exception as e:
             self.log(f"Error opening Napari: {e}\n{traceback.format_exc()}")
