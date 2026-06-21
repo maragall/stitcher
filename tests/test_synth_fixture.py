@@ -14,7 +14,8 @@ from tests.fixtures.generate_synth_4fov import (
 
 
 def test_base_offsets_are_the_raster_grid():
-    expected = np.array([(0, 0), (0, 1024), (1024, 0), (1024, 1024)], dtype=np.float64)
+    # inset grid (MARGIN=24, STEP=984) so every sampling window stays in-bounds (no fabrication)
+    expected = np.array([(24, 24), (24, 1008), (1008, 24), (1008, 1008)], dtype=np.float64)
     np.testing.assert_array_equal(BASE_OFFSETS, expected)
 
 
