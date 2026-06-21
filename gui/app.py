@@ -324,8 +324,11 @@ class PreviewWorker(QThread):
                 ox_f = (pos[1] - min_x) / pixel_size[1] + float(global_offsets[i][1])
                 oy0, ox0 = int(np.floor(oy_f)), int(np.floor(ox_f))
                 fy, fx = oy_f - oy0, ox_f - ox0
-                arr_sub = ndi_shift(arr_norm, (fy, fx), order=1, mode="constant", cval=0.0)
-                raw_sub = ndi_shift(arr_raw, (fy, fx), order=1, mode="constant", cval=0.0)
+                # mode="nearest" replicates the real edge pixels; "constant"/cval=0 would
+                # pad the leading edge with pure black -> a spurious black border on every
+                # tile. The fractional shift is sub-pixel, so edge replication is faithful.
+                arr_sub = ndi_shift(arr_norm, (fy, fx), order=1, mode="nearest")
+                raw_sub = ndi_shift(arr_raw, (fy, fx), order=1, mode="nearest")
                 y1, y2 = max(0, oy0), min(oy0 + th, h)
                 x1, x2 = max(0, ox0), min(ox0 + tw, w)
                 if y2 > y1 and x2 > x1:
