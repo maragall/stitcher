@@ -70,6 +70,32 @@ class TestFitStageToImageTransform:
         truth = M_true @ (P[stranded] - P[0])
         assert np.linalg.norm(predicted - truth) < 8.0, np.linalg.norm(predicted - truth)
 
+    def test_optimize_shifts_places_unconstrained_tile(self):
+        # Integration: the optimize_shifts path must place a tile the solve left
+        # unconstrained (no registered pairs) via the affine, near its true position.
+        from types import SimpleNamespace
+        from tilefusion.core import TileFusion
+
+        stranded = 12  # interior tile of a 5x5 grid; dropping its pairs strands only it
+        pm, pos, ps, M_true, _ = _grid_with_injected_transform(n=5, drop_tile=stranded, jitter=2.0)
+        n = len(pos)
+        edges = _edges_from_pairwise_metrics(pm)
+        assert all(stranded not in k for k in pm)
+        fake = SimpleNamespace(
+            pairwise_metrics=pm,
+            _tile_positions=pos,
+            _pixel_size=ps,
+            global_offsets=np.zeros((n, 2)),  # solve leaves the stranded tile at 0 (stage pos)
+        )
+        TileFusion._place_unconstrained_tiles_with_affine(fake, edges, n)
+        P = np.array(pos, dtype=np.float64)
+        d = P[stranded] - P[0]
+        placed_px = d / np.array(ps) + fake.global_offsets[stranded]  # absolute px (rel. to anchor)
+        truth_px = M_true @ d
+        assert np.linalg.norm(placed_px - truth_px) < 8.0, np.linalg.norm(placed_px - truth_px)
+        # a connected tile's offset must be untouched (still 0 here)
+        assert np.allclose(fake.global_offsets[0], 0.0)
+
 
 class TestSolveLeastSquares:
     """Tests for solve_least_squares function."""

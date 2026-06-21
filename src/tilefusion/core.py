@@ -35,7 +35,13 @@ from .registration import (
     register_pairs_readahead,
 )
 from .fusion import fuse_plane
-from .optimization import _edges_from_pairwise_metrics, solve_least_squares, two_round_optimization
+from .optimization import (
+    _check_connectivity,
+    _edges_from_pairwise_metrics,
+    fit_stage_to_image_transform,
+    solve_least_squares,
+    two_round_optimization,
+)
 from .flatfield import apply_flatfield, apply_flatfield_region
 from .io import (
     open_reader,
@@ -677,6 +683,52 @@ class TileFusion:
 
         # 4. Store the optimized per-tile offsets
         self.global_offsets = d_opt
+
+        # 5. Place tiles the solve left unconstrained (disconnected from the anchor:
+        #    singletons + floating components) via the global stage->image affine,
+        #    instead of leaving them at raw, miscalibrated stage positions.
+        self._place_unconstrained_tiles_with_affine(edges, n_tiles)
+
+    def _place_unconstrained_tiles_with_affine(self, edges, n_tiles: int) -> None:
+        """Position tiles not connected to the anchor via the global stage->image
+        affine fit from the registered pairs. Connected tiles keep their solved offset.
+
+        A tile whose overlaps were too low-texture to register is left unconstrained
+        by the least-squares solve and floats at its raw, miscalibrated stage position
+        -- the source of seam misalignment. The affine (a property of the instrument,
+        fit from the pairs that DID register) predicts where it belongs. No-op when the
+        graph is fully connected to the anchor (so the synthetic fixtures are unchanged)
+        or when too few pairs exist to fit a reliable transform.
+        """
+        components = _check_connectivity(edges, n_tiles)
+        anchor_component = next((c for c in components if 0 in c), [])
+        unconstrained = [t for t in range(n_tiles) if t not in anchor_component]
+        if not unconstrained:
+            return  # fully connected to the anchor: the solve already placed everything
+
+        _MIN_PAIRS_FOR_AFFINE = 8  # a 2-3 DOF global transform needs a handful of spread pairs
+        if len(self.pairwise_metrics) < _MIN_PAIRS_FOR_AFFINE:
+            logger.warning(
+                "%d tile(s) unconstrained but only %d registered pairs (< %d); leaving them "
+                "at stage positions rather than an unreliable affine fit.",
+                len(unconstrained), len(self.pairwise_metrics), _MIN_PAIRS_FOR_AFFINE,
+            )
+            return
+
+        cal = fit_stage_to_image_transform(self.pairwise_metrics, self._tile_positions, self._pixel_size)
+        M = cal["M"]
+        pos = np.asarray(self._tile_positions, dtype=np.float64)
+        ps = np.asarray(self._pixel_size, dtype=np.float64)
+        ref = pos[0]
+        for k in unconstrained:
+            d = pos[k] - ref
+            # store as an offset to the isotropic model, consistent with global_offsets
+            self.global_offsets[k] = M @ d - d / ps
+        print(
+            f"Affine calibration: placed {len(unconstrained)} unconstrained tile(s) "
+            f"(scale {cal['scale']:.2f} px/unit, rotation {cal['rotation_deg']:+.3f} deg, "
+            f"fit residual {cal['residual_rms']:.1f} px over {cal['n_pairs']} pairs)."
+        )
 
     # -------------------------------------------------------------------------
     # Metrics persistence
