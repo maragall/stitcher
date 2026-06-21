@@ -577,6 +577,9 @@ class TileFusion:
         sw = ssim_window or self.ssim_window
         self.pairwise_metrics.clear()
 
+        # Residual-shift sanity cap (pixels, per axis). After cropping to the overlap,
+        # the recovered residual should be a few px; a residual beyond this is almost
+        # certainly a spurious phase-correlation peak, so that pair is dropped.
         max_shift = (100, 100)
 
         # Find adjacent pairs
@@ -615,10 +618,18 @@ class TileFusion:
 
         n_success = len(self.pairwise_metrics)
         n_failed = n_attempted - n_success
-        print(
-            f"Registration: {n_success}/{n_attempted} pairs succeeded"
-            + (f", {n_failed} failed" if n_failed else "")
-        )
+        msg = f"Registration: {n_success}/{n_attempted} pairs succeeded"
+        if n_failed:
+            # Surface WHICH pairs were dropped and why, instead of leaving it to a
+            # debug-only log -- a dropped pair removes a constraint and can shift the
+            # result, so it must be visible.
+            attempted = {(b[0], b[1]) for b in pair_bounds}
+            dropped = sorted(attempted - set(self.pairwise_metrics))
+            msg += (
+                f", {n_failed} dropped (residual > max_shift {max_shift} px, or a "
+                f"read/registration error): {dropped}"
+            )
+        print(msg)
 
     # -------------------------------------------------------------------------
     # Optimization
