@@ -2,8 +2,8 @@
 Global position optimization.
 
 Least-squares optimization of tile positions from pairwise measurements.
-Uses minimum spanning tree (MST) to select the most reliable links
-before optimization, reducing noise from redundant/bad links.
+Uses minimum spanning tree (MST) to select the most reliable edges
+before optimization, reducing noise from redundant/bad edges.
 """
 
 import logging
@@ -14,30 +14,30 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-def _build_mst_links(links: List[Dict[str, Any]], n_tiles: int) -> List[Dict[str, Any]]:
+def _build_mst(edges: List[Dict[str, Any]], n_tiles: int) -> List[Dict[str, Any]]:
     """
-    Select links forming a minimum spanning tree (maximum-weight spanning tree,
+    Select edges forming a minimum spanning tree (maximum-weight spanning tree,
     since higher SSIM weight = more reliable).
 
     Uses Kruskal's algorithm on the negated weights.
 
     Parameters
     ----------
-    links : list of dict
-        All available links with 'i', 'j', 'w' keys.
+    edges : list of dict
+        All available edges with 'i', 'j', 'w' keys.
     n_tiles : int
         Total number of tiles.
 
     Returns
     -------
-    mst_links : list of dict
-        Subset of links forming the MST.
+    mst_edges : list of dict
+        Subset of edges forming the MST.
     """
-    if not links:
+    if not edges:
         return []
 
     # Sort by weight descending (we want maximum spanning tree)
-    sorted_links = sorted(links, key=lambda l: l["w"], reverse=True)
+    sorted_edges = sorted(edges, key=lambda e: e["w"], reverse=True)
 
     # Union-Find for Kruskal's
     parent = list(range(n_tiles))
@@ -60,24 +60,24 @@ def _build_mst_links(links: List[Dict[str, Any]], n_tiles: int) -> List[Dict[str
             rank[rx] += 1
         return True
 
-    mst_links = []
-    for link in sorted_links:
-        if union(link["i"], link["j"]):
-            mst_links.append(link)
-        if len(mst_links) == n_tiles - 1:
+    mst_edges = []
+    for edge in sorted_edges:
+        if union(edge["i"], edge["j"]):
+            mst_edges.append(edge)
+        if len(mst_edges) == n_tiles - 1:
             break
 
-    return mst_links
+    return mst_edges
 
 
-def _check_connectivity(links: List[Dict[str, Any]], n_tiles: int) -> List[List[int]]:
+def _check_connectivity(edges: List[Dict[str, Any]], n_tiles: int) -> List[List[int]]:
     """
     Check graph connectivity and return connected components.
 
     Parameters
     ----------
-    links : list of dict
-        Links with 'i', 'j' keys.
+    edges : list of dict
+        Edges with 'i', 'j' keys.
     n_tiles : int
         Total number of tiles.
 
@@ -100,8 +100,8 @@ def _check_connectivity(links: List[Dict[str, Any]], n_tiles: int) -> List[List[
         if rx != ry:
             parent[ry] = rx
 
-    for link in links:
-        union(link["i"], link["j"])
+    for edge in edges:
+        union(edge["i"], edge["j"])
 
     components = {}
     for i in range(n_tiles):
@@ -111,14 +111,14 @@ def _check_connectivity(links: List[Dict[str, Any]], n_tiles: int) -> List[List[
     return list(components.values())
 
 
-def solve_global(links: List[Dict[str, Any]], n_tiles: int, fixed_indices: List[int]) -> np.ndarray:
+def solve_least_squares(edges: List[Dict[str, Any]], n_tiles: int, fixed_indices: List[int]) -> np.ndarray:
     """
     Solve a linear least-squares for all 2 axes at once,
-    given weighted pairwise links and fixed tile indices.
+    given weighted pairwise edges and fixed tile indices.
 
     Parameters
     ----------
-    links : list of dict
+    edges : list of dict
         Each dict has keys: 'i', 'j', 't' (2D offset), 'w' (weight).
     n_tiles : int
         Total number of tiles.
@@ -132,13 +132,13 @@ def solve_global(links: List[Dict[str, Any]], n_tiles: int, fixed_indices: List[
     """
     shifts = np.zeros((n_tiles, 2), dtype=np.float64)
     for axis in range(2):
-        m = len(links) + len(fixed_indices)
+        m = len(edges) + len(fixed_indices)
         A = np.zeros((m, n_tiles), dtype=np.float64)
         b = np.zeros(m, dtype=np.float64)
         row = 0
-        for link in links:
-            i, j = link["i"], link["j"]
-            t, w = link["t"][axis], link["w"]
+        for edge in edges:
+            i, j = edge["i"], edge["j"]
+            t, w = edge["t"][axis], edge["w"]
             A[row, j] = w
             A[row, i] = -w
             b[row] = w * t
@@ -153,7 +153,7 @@ def solve_global(links: List[Dict[str, Any]], n_tiles: int, fixed_indices: List[
 
 
 def two_round_optimization(
-    links: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
     n_tiles: int,
     fixed_indices: List[int],
     rel_thresh: float,
@@ -162,18 +162,18 @@ def two_round_optimization(
 ) -> np.ndarray:
     """
     Perform two-round (or iterative two-round) robust optimization:
-    1. Select MST links for robustness (fewer, higher-quality links).
-    2. Solve on MST links.
-    3. Remove any link whose residual > max(abs_thresh, rel_thresh * median(residuals)).
-    4. Re-solve on the remaining links.
-    If iterative=True, repeat step 3 + 4 until no more links are removed.
+    1. Select MST edges for robustness (fewer, higher-quality edges).
+    2. Solve on MST edges.
+    3. Remove any edge whose residual > max(abs_thresh, rel_thresh * median(residuals)).
+    4. Re-solve on the remaining edges.
+    If iterative=True, repeat step 3 + 4 until no more edges are removed.
 
     Also checks for disconnected components and warns the user.
 
     Parameters
     ----------
-    links : list of dict
-        Pairwise link data.
+    edges : list of dict
+        Pairwise edge data.
     n_tiles : int
         Total number of tiles.
     fixed_indices : list of int
@@ -190,16 +190,16 @@ def two_round_optimization(
     shifts : ndarray of shape (n_tiles, 2)
         Optimized shifts.
     """
-    # Use MST for initial solve — reduces noise from redundant links
-    mst_links = _build_mst_links(links, n_tiles)
+    # Use MST for initial solve — reduces noise from redundant edges
+    mst_edges = _build_mst(edges, n_tiles)
 
-    if len(mst_links) < len(links):
+    if len(mst_edges) < len(edges):
         logger.info(
-            "MST selected %d of %d links for optimization", len(mst_links), len(links)
+            "MST selected %d of %d edges for optimization", len(mst_edges), len(edges)
         )
 
     # Check connectivity
-    components = _check_connectivity(mst_links, n_tiles)
+    components = _check_connectivity(mst_edges, n_tiles)
     if len(components) > 1:
         sizes = sorted([len(c) for c in components], reverse=True)
         disconnected_tiles = sum(sizes[1:])
@@ -214,9 +214,9 @@ def two_round_optimization(
             f"Component sizes: {sizes}"
         )
 
-    # Solve on MST links
-    work = mst_links.copy()
-    shifts = solve_global(work, n_tiles, fixed_indices)
+    # Solve on MST edges
+    work = mst_edges.copy()
+    shifts = solve_least_squares(work, n_tiles, fixed_indices)
 
     def compute_res(ls: List[Dict[str, Any]], sh: np.ndarray) -> np.ndarray:
         return np.array([np.linalg.norm(sh[l["j"]] - sh[l["i"]] - l["t"]) for l in ls])
@@ -233,7 +233,7 @@ def two_round_optimization(
                 work.pop(k)
             if not work:
                 break
-            shifts = solve_global(work, n_tiles, fixed_indices)
+            shifts = solve_least_squares(work, n_tiles, fixed_indices)
             res = compute_res(work, shifts)
             if len(res) == 0:
                 break
@@ -243,16 +243,16 @@ def two_round_optimization(
         for k in sorted(outliers, reverse=True):
             work.pop(k)
         if work:
-            shifts = solve_global(work, n_tiles, fixed_indices)
+            shifts = solve_least_squares(work, n_tiles, fixed_indices)
 
     return shifts
 
 
-def links_from_pairwise_metrics(
+def _edges_from_pairwise_metrics(
     pairwise_metrics: Dict[Tuple[int, int], Tuple[int, int, float]],
 ) -> List[Dict[str, Any]]:
     """
-    Convert pairwise_metrics dict to list of link dicts.
+    Convert pairwise_metrics dict to list of edge dicts.
 
     Parameters
     ----------
@@ -261,12 +261,12 @@ def links_from_pairwise_metrics(
 
     Returns
     -------
-    links : list of dict
+    edges : list of dict
         Each dict has 'i', 'j', 't', 'w' keys.
     """
-    links = []
+    edges = []
     for (i, j), v in pairwise_metrics.items():
-        links.append(
+        edges.append(
             {
                 "i": i,
                 "j": j,
@@ -274,4 +274,4 @@ def links_from_pairwise_metrics(
                 "w": np.sqrt(v[2]),
             }
         )
-    return links
+    return edges

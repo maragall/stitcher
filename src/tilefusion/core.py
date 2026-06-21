@@ -37,7 +37,7 @@ from .registration import (
     register_pair_worker,
 )
 from .fusion import accumulate_tile_shard, normalize_shard
-from .optimization import links_from_pairwise_metrics, solve_global, two_round_optimization
+from .optimization import _edges_from_pairwise_metrics, solve_least_squares, two_round_optimization
 from .flatfield import apply_flatfield, apply_flatfield_region
 from .io import (
     open_reader,
@@ -725,23 +725,27 @@ class TileFusion:
         iterative : bool
             If True, repeat outlier removal until convergence.
         """
-        links = links_from_pairwise_metrics(self.pairwise_metrics)
-        if not links:
+        # 1. Derive solver edges from the canonical pairwise_metrics (transient, private form)
+        edges = _edges_from_pairwise_metrics(self.pairwise_metrics)
+        if not edges:
             self.global_offsets = np.zeros((self.position_dim, 2), dtype=np.float64)
             return
 
-        n = len(self._tile_positions)
-        fixed = [0]
+        # 2. Anchor the first tile at the origin
+        n_tiles = len(self._tile_positions)
+        anchored = [0]
 
+        # 3. Dispatch to the chosen solver
         if method == "ONE_ROUND":
-            d_opt = solve_global(links, n, fixed)
+            d_opt = solve_least_squares(edges, n_tiles, anchored)
         elif method.startswith("TWO_ROUND"):
             d_opt = two_round_optimization(
-                links, n, fixed, rel_thresh, abs_thresh, method.endswith("ITERATIVE")
+                edges, n_tiles, anchored, rel_thresh, abs_thresh, method.endswith("ITERATIVE")
             )
         else:
             raise ValueError(f"Unknown method {method}")
 
+        # 4. Store the optimized per-tile offsets
         self.global_offsets = d_opt
 
     # -------------------------------------------------------------------------

@@ -4,21 +4,21 @@ import numpy as np
 import pytest
 
 from tilefusion.optimization import (
-    solve_global,
+    solve_least_squares,
     two_round_optimization,
-    links_from_pairwise_metrics,
+    _edges_from_pairwise_metrics,
 )
 
 
-class TestSolveGlobal:
-    """Tests for solve_global function."""
+class TestSolveLeastSquares:
+    """Tests for solve_least_squares function."""
 
     def test_two_tiles_simple(self):
         """Test optimization with two tiles and known offset."""
         links = [
             {"i": 0, "j": 1, "t": np.array([10.0, 5.0]), "w": 1.0},
         ]
-        shifts = solve_global(links, n_tiles=2, fixed_indices=[0])
+        shifts = solve_least_squares(links, n_tiles=2, fixed_indices=[0])
 
         assert shifts.shape == (2, 2)
         # Tile 0 should be at origin
@@ -32,7 +32,7 @@ class TestSolveGlobal:
             {"i": 0, "j": 1, "t": np.array([10.0, 0.0]), "w": 1.0},
             {"i": 1, "j": 2, "t": np.array([10.0, 0.0]), "w": 1.0},
         ]
-        shifts = solve_global(links, n_tiles=3, fixed_indices=[0])
+        shifts = solve_least_squares(links, n_tiles=3, fixed_indices=[0])
 
         assert np.allclose(shifts[0], [0, 0])
         assert np.allclose(shifts[1], [10, 0])
@@ -46,7 +46,7 @@ class TestSolveGlobal:
             {"i": 1, "j": 2, "t": np.array([0.0, 10.0]), "w": 1.0},
             {"i": 0, "j": 2, "t": np.array([10.0, 10.0]), "w": 1.0},
         ]
-        shifts = solve_global(links, n_tiles=3, fixed_indices=[0])
+        shifts = solve_least_squares(links, n_tiles=3, fixed_indices=[0])
 
         assert np.allclose(shifts[0], [0, 0])
         assert np.allclose(shifts[1], [10, 0], atol=0.1)
@@ -59,14 +59,14 @@ class TestSolveGlobal:
             {"i": 0, "j": 1, "t": np.array([10.0, 0.0]), "w": 1.0},
             {"i": 0, "j": 1, "t": np.array([20.0, 0.0]), "w": 3.0},
         ]
-        shifts = solve_global(links, n_tiles=2, fixed_indices=[0])
+        shifts = solve_least_squares(links, n_tiles=2, fixed_indices=[0])
 
         # Should be closer to 20 due to higher weight
         assert shifts[1, 0] > 15
 
     def test_no_links(self):
         """Test with no links (should return zeros)."""
-        shifts = solve_global([], n_tiles=3, fixed_indices=[0])
+        shifts = solve_least_squares([], n_tiles=3, fixed_indices=[0])
         assert np.allclose(shifts, 0)
 
 
@@ -123,8 +123,8 @@ class TestTwoRoundOptimization:
         assert shifts[2, 0] < 100
 
 
-class TestLinksFromPairwiseMetrics:
-    """Tests for links_from_pairwise_metrics function."""
+class TestEdgesFromPairwiseMetrics:
+    """Tests for _edges_from_pairwise_metrics function."""
 
     def test_basic_conversion(self):
         """Test basic conversion from pairwise metrics."""
@@ -132,7 +132,7 @@ class TestLinksFromPairwiseMetrics:
             (0, 1): (10, 5, 0.9),
             (1, 2): (10, 0, 0.8),
         }
-        links = links_from_pairwise_metrics(metrics)
+        links = _edges_from_pairwise_metrics(metrics)
 
         assert len(links) == 2
         assert links[0]["i"] == 0
@@ -142,7 +142,7 @@ class TestLinksFromPairwiseMetrics:
 
     def test_empty_metrics(self):
         """Test with empty metrics."""
-        links = links_from_pairwise_metrics({})
+        links = _edges_from_pairwise_metrics({})
         assert links == []
 
     def test_weight_calculation(self):
@@ -151,7 +151,7 @@ class TestLinksFromPairwiseMetrics:
             (0, 1): (0, 0, 0.25),
             (1, 2): (0, 0, 1.0),
         }
-        links = links_from_pairwise_metrics(metrics)
+        links = _edges_from_pairwise_metrics(metrics)
 
         assert links[0]["w"] == pytest.approx(0.5)
         assert links[1]["w"] == pytest.approx(1.0)
