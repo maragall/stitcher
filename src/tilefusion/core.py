@@ -108,6 +108,33 @@ class TileFusion:
         registration_z: Optional[int] = None,
         registration_t: int = 0,
     ):
+        self._resolve_paths(tiff_path, output_path)
+        self._load_metadata()
+        self._apply_region_filter(region)
+        self._configure_z_t_planes(registration_z, registration_t)
+        self._configure_registration_params(
+            downsample_factors,
+            ssim_window,
+            threshold,
+            multiscale_factors,
+            resolution_multiples,
+            max_workers,
+            debug,
+            metrics_filename,
+            blend_pixels,
+            channel_to_use,
+            multiscale_downsample,
+        )
+        self._update_profiles()
+        self._init_chunking()
+        self._init_pipeline_state()
+        self._init_corrections(flatfield, darkfield)
+        self._init_handle_storage()
+
+    def _resolve_paths(
+        self, tiff_path: Union[str, Path], output_path: Union[str, Path]
+    ) -> None:
+        """Resolve the input path (must exist) and the fused-output path."""
         self.tiff_path = Path(tiff_path)
         if not self.tiff_path.exists():
             raise FileNotFoundError(f"Path not found: {self.tiff_path}")
@@ -118,6 +145,8 @@ class TileFusion:
             else self.tiff_path.parent / f"{self.tiff_path.stem}_fused.ome.zarr"
         )
 
+    def _load_metadata(self) -> None:
+        """Open the unified reader and extract common tile/grid properties."""
         # Detect the input format and load its metadata via the unified reader.
         # The reader encapsulates format detection, the per-format metadata
         # loaders, and (for single OME-TIFF) the immediate handle close that
@@ -136,6 +165,9 @@ class TileFusion:
         self._tile_positions = self._metadata["tile_positions"]
         self._tile_identifiers = self._metadata.get("tile_identifiers", [])
         self._unique_regions = self._metadata.get("unique_regions", [])
+
+    def _apply_region_filter(self, region: Optional[str]) -> None:
+        """Filter tiles to a single region, mutating tile/grid state and metadata."""
         self._region = region
 
         # Filter to specific region if requested
@@ -158,6 +190,10 @@ class TileFusion:
             self._metadata["tile_identifiers"] = filtered_identifiers
             self._metadata["n_tiles"] = self.n_tiles
 
+    def _configure_z_t_planes(
+        self, registration_z: Optional[int], registration_t: int
+    ) -> None:
+        """Set z/t plane counts and validate the registration z/t selection."""
         # Z-stack and time series properties
         self.n_z = self._metadata.get("n_z", 1)
         self.n_t = self._metadata.get("n_t", 1)
@@ -177,6 +213,21 @@ class TileFusion:
             raise ValueError(f"registration_t={registration_t} out of range [0, {self.n_t})")
         self._registration_t = registration_t
 
+    def _configure_registration_params(
+        self,
+        downsample_factors: Tuple[int, int],
+        ssim_window: int,
+        threshold: float,
+        multiscale_factors: Sequence[int],
+        resolution_multiples: Sequence[Union[int, Sequence[int]]],
+        max_workers: int,
+        debug: bool,
+        metrics_filename: str,
+        blend_pixels: Tuple[int, int],
+        channel_to_use: int,
+        multiscale_downsample: str,
+    ) -> None:
+        """Store registration/fusion config scalars and validate downsample mode."""
         # Configuration
         self.downsample_factors = tuple(downsample_factors)
         self.ssim_window = int(ssim_window)
@@ -195,20 +246,26 @@ class TileFusion:
             raise ValueError('multiscale_downsample must be "stride" or "block_mean".')
         self.multiscale_downsample = multiscale_downsample
 
-        self._update_profiles()
+    def _init_chunking(self) -> None:
+        """Set the output chunk shape and its derived y/x sizes."""
         self.chunk_shape = (1, CODEC_CHUNK, CODEC_CHUNK)
         self.chunk_y, self.chunk_x = self.chunk_shape[-2:]
 
+    def _init_pipeline_state(self) -> None:
+        """Initialize the mutable registration/fusion pipeline state."""
         # State
         self.pairwise_metrics: Dict[Tuple[int, int], Tuple[int, int, float]] = {}
         self.global_offsets: Optional[np.ndarray] = None
         self.offset: Optional[Tuple[float, float]] = None
         self.unpadded_shape: Optional[Tuple[int, int]] = None
         self.padded_shape: Optional[Tuple[int, int]] = None
-        self.pad = (0, 0)
         self.fused_ts = None
         self.center = None
 
+    def _init_corrections(
+        self, flatfield: Optional[np.ndarray], darkfield: Optional[np.ndarray]
+    ) -> None:
+        """Store optional flatfield/darkfield and validate their shapes."""
         # Flatfield correction (optional)
         self._flatfield = flatfield  # Shape (C, Y, X) or None
         self._darkfield = darkfield  # Shape (C, Y, X) or None
@@ -226,6 +283,8 @@ class TileFusion:
                 f"tile shape {expected_shape} (channels, Y, X)"
             )
 
+    def _init_handle_storage(self) -> None:
+        """Initialize thread-local storage for TiffFile handles."""
         # Thread-local storage for TiffFile handles (thread-safe concurrent access)
         self._thread_local = threading.local()
         self._handles_lock = threading.Lock()
@@ -660,7 +719,6 @@ class TileFusion:
         py = (-sy) % ty
         px = (-sx) % tx
 
-        self.pad = (py, px)
         self.padded_shape = (sy + py, sx + px)
 
     def _create_fused_tensorstore(self, output_path: Union[str, Path]) -> None:
