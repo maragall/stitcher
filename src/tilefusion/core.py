@@ -8,8 +8,6 @@ import gc
 import json
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
@@ -33,8 +31,8 @@ from .utils import (
 from .registration import (
     compute_pair_bounds,
     find_adjacent_pairs,
-    register_and_score,
-    register_pair_worker,
+    register_pairs_batched,
+    register_pairs_readahead,
 )
 from .fusion import accumulate_tile_shard, normalize_shard
 from .optimization import _edges_from_pairwise_metrics, solve_least_squares, two_round_optimization
@@ -553,9 +551,16 @@ class TileFusion:
         n_attempted = len(pair_bounds)
 
         if use_parallel:
-            self._register_parallel(pair_bounds, df, sw, th, max_shift)
+            results = register_pairs_batched(
+                pair_bounds, self._read_tile_region, df, sw, th, max_shift,
+                self._max_workers, debug=self._debug,
+            )
         else:
-            self._register_sequential(pair_bounds, df, sw, th, max_shift)
+            results = register_pairs_readahead(
+                pair_bounds, self._read_tile_region, df, sw, th, max_shift,
+                debug=self._debug,
+            )
+        self.pairwise_metrics.update(results)
 
         n_success = len(self.pairwise_metrics)
         n_failed = n_attempted - n_success
@@ -563,143 +568,6 @@ class TileFusion:
             f"Registration: {n_success}/{n_attempted} pairs succeeded"
             + (f", {n_failed} failed" if n_failed else "")
         )
-
-    def _register_parallel(
-        self,
-        pair_bounds: List[Tuple],
-        df: Tuple[int, int],
-        sw: int,
-        th: float,
-        max_shift: Tuple[int, int],
-    ) -> None:
-        """Register tile pairs using parallel I/O and compute.
-
-        Strips are read and registered in fixed-size batches. The batch is tied
-        to the compute pool (``4 * n_workers`` pairs), so resident strip memory
-        is a constant set by concurrency, independent of the machine's RAM and of
-        the number of pairs. Pairs are independent, so batching changes only when
-        a strip is resident, never the resulting metrics.
-        """
-        n_pairs = len(pair_bounds)
-        if n_pairs == 0:
-            return
-        n_workers = min(cpu_count(), n_pairs, self._max_workers)
-        io_workers = min(n_pairs, self._max_workers)
-
-        # Resident strips are bounded by the compute pool, not by free RAM or by
-        # the dataset size. The factor gives the workers a small read-ahead so
-        # they do not stall between batches.
-        batch_size = 4 * n_workers
-        n_batches = (n_pairs + batch_size - 1) // batch_size
-        print(
-            f"Parallel registration: {n_pairs} pairs in {n_batches} batches, "
-            f"{n_workers} compute workers, {io_workers} I/O workers"
-        )
-
-        def read_pair_patches(args):
-            i_pos, j_pos, bounds_i_y, bounds_i_x, bounds_j_y, bounds_j_x = args
-            try:
-                patch_i = self._read_tile_region(
-                    i_pos, slice(bounds_i_y[0], bounds_i_y[1]), slice(bounds_i_x[0], bounds_i_x[1])
-                )
-                patch_j = self._read_tile_region(
-                    j_pos, slice(bounds_j_y[0], bounds_j_y[1]), slice(bounds_j_x[0], bounds_j_x[1])
-                )
-                return (i_pos, j_pos, patch_i, patch_j)
-            except Exception as e:
-                logger.warning("I/O failed for pair (%d, %d): %s", i_pos, j_pos, e)
-                return (i_pos, j_pos, None, None)
-
-        for batch_idx in range(n_batches):
-            start = batch_idx * batch_size
-            end = min(start + batch_size, n_pairs)
-            batch = pair_bounds[start:end]
-
-            with ThreadPoolExecutor(max_workers=io_workers) as io_executor:
-                patches = list(io_executor.map(read_pair_patches, batch))
-
-            work_items = [
-                (i, j, pi, pj, df, sw, th, max_shift)
-                for i, j, pi, pj in patches
-                if pi is not None
-            ]
-
-            desc = f"register {batch_idx+1}/{n_batches}"
-            with ThreadPoolExecutor(max_workers=n_workers) as executor:
-                results = list(
-                    tqdm(
-                        executor.map(register_pair_worker, work_items),
-                        total=len(work_items),
-                        desc=desc,
-                        leave=True,
-                    )
-                )
-
-            for i_pos, j_pos, dy_s, dx_s, score in results:
-                if dy_s is not None:
-                    self.pairwise_metrics[(i_pos, j_pos)] = (dy_s, dx_s, score)
-
-            del patches, work_items, results
-            gc.collect()
-
-    def _register_sequential(
-        self,
-        pair_bounds: List[Tuple],
-        df: Tuple[int, int],
-        sw: int,
-        th: float,
-        max_shift: Tuple[int, int],
-    ) -> None:
-        """Register tile pairs sequentially (GPU mode or small datasets)."""
-        io_executor = ThreadPoolExecutor(max_workers=2)
-
-        for i_pos, j_pos, bounds_i_y, bounds_i_x, bounds_j_y, bounds_j_x in tqdm(
-            pair_bounds, desc="register", leave=True
-        ):
-
-            def read_patch(idx, y_bounds, x_bounds):
-                return self._read_tile_region(
-                    idx, slice(y_bounds[0], y_bounds[1]), slice(x_bounds[0], x_bounds[1])
-                )
-
-            try:
-                future_i = io_executor.submit(read_patch, i_pos, bounds_i_y, bounds_i_x)
-                future_j = io_executor.submit(read_patch, j_pos, bounds_j_y, bounds_j_x)
-                patch_i = future_i.result()
-                patch_j = future_j.result()
-            except Exception as e:
-                if self._debug:
-                    print(f"Error reading patches for ({i_pos}, {j_pos}): {e}")
-                continue
-
-            arr_i = xp.asarray(patch_i)
-            arr_j = xp.asarray(patch_j)
-
-            reduce_block = (1, df[0], df[1]) if arr_i.ndim == 3 else tuple(df)
-            g1 = block_reduce(arr_i, reduce_block, xp.mean)
-            g2 = block_reduce(arr_j, reduce_block, xp.mean)
-
-            try:
-                shift_ds, ssim_val = register_and_score(g1, g2, win_size=sw, debug=self._debug)
-            except Exception as e:
-                logger.warning("Registration failed for (%d, %d): %s", i_pos, j_pos, e)
-                continue
-
-            if shift_ds is None:
-                continue
-            score = float(max(ssim_val, 1e-6))
-            # SSIM is used as continuous weight in optimization, not binary gate
-
-            dy_s, dx_s = [int(np.round(shift_ds[k] * df[k])) for k in range(2)]
-
-            if abs(dy_s) > max_shift[0] or abs(dx_s) > max_shift[1]:
-                if self._debug:
-                    print(f"Dropping link {(i_pos, j_pos)} shift=({dy_s}, {dx_s})")
-                continue
-
-            self.pairwise_metrics[(i_pos, j_pos)] = (dy_s, dx_s, round(score, 3))
-
-        io_executor.shutdown(wait=True)
 
     # -------------------------------------------------------------------------
     # Optimization

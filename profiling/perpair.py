@@ -1,9 +1,9 @@
 """Non-invasive per-pair recorder for the registration stage.
 
-Wraps the module-level ``register_pair_worker`` that ``tilefusion.core`` calls,
-recording each pair's tile indices, overlap-patch byte sizes, and wall-clock
-duration. Restores the original on exit. Use with ``max_workers=1`` so per-pair
-durations are not inflated by concurrency.
+Wraps the module-level ``register_pair_worker`` that ``tilefusion.registration``
+calls, recording each pair's tile indices, overlap-patch byte sizes, and
+wall-clock duration. Restores the original on exit. Use with ``max_workers=1`` so
+per-pair durations are not inflated by concurrency.
 """
 
 import time
@@ -22,16 +22,16 @@ class PairRecord(NamedTuple):
 
 class PairRecorder:
     def __init__(self, target=None, attr: str = "register_pair_worker"):
-        self._target = target  # resolved to tilefusion.core on enter if None
+        self._target = target  # resolved to tilefusion.registration on enter if None
         self._attr = attr
         self._original = None
         self.records: List[PairRecord] = []
 
     def __enter__(self) -> "PairRecorder":
         if self._target is None:
-            import tilefusion.core as core
+            import tilefusion.registration as registration
 
-            self._target = core
+            self._target = registration
         self._original = getattr(self._target, self._attr)
         original = self._original
         records = self.records
