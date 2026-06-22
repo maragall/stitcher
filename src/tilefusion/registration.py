@@ -16,7 +16,6 @@ from tqdm import tqdm
 from .utils import (
     USING_GPU,
     block_reduce,
-    compute_ssim,
     match_histograms,
     phase_cross_correlation,
     shift_array,
@@ -87,14 +86,15 @@ def register_and_score(
     debug: bool = False,
 ) -> Union[Tuple[Tuple[float, float], float], Tuple[None, None]]:
     """
-    Histogram-match g2->g1, compute subpixel shift, and SSIM.
+    Histogram-match g2->g1, compute the subpixel shift, and score the lock by NCC.
 
     Parameters
     ----------
     g1, g2 : array-like
         Fixed and moving patches (YX).
     win_size : int
-        SSIM window.
+        Retained for API compatibility (was the SSIM window); unused now that the
+        confidence score is normalized cross-correlation.
     debug : bool
         If True, print intermediate info.
 
@@ -102,8 +102,9 @@ def register_and_score(
     -------
     shift : (dy, dx)
         Subpixel shift.
-    ssim_val : float
-        SSIM score.
+    score : float
+        Normalized cross-correlation of the aligned overlaps (the optimization edge
+        weight, via sqrt). High when the lock is real; collapses on a spurious lock.
     """
     arr1 = xp.asarray(g1, dtype=xp.float32)
     arr2 = xp.asarray(g2, dtype=xp.float32)
@@ -122,9 +123,26 @@ def register_and_score(
     )
     shift_apply = xp.asarray(shift, dtype=xp.float32)
     g2s = shift_array(arr2, shift_vec=shift_apply)
-    ssim_val = compute_ssim(arr1, g2s, win_size=win_size)
     out_shift = to_numpy(shift_apply)
-    return tuple(float(s) for s in out_shift), float(ssim_val)
+    # Score (the optimization edge weight) by NORMALIZED CROSS-CORRELATION of the
+    # aligned overlaps, NOT SSIM. NCC collapses when the recovered shift is wrong (a
+    # spurious low-texture lock), whereas SSIM -- computed on the same strips that
+    # produced the shift -- stays high and "blesses" bad locks, letting them pull the
+    # global solve out of place (validated: on failed locks NCC~0.16 while SSIM~0.60).
+    # Crop a shift-sized margin so the wrapped edge does not bias the correlation; clamp
+    # to a tiny positive so the weight (sqrt of the score) is well-defined and a bad
+    # lock is heavily down-weighted rather than hard-zeroed.
+    a = to_numpy(arr1)
+    b = to_numpy(g2s)
+    mgn = max(1, min(min(a.shape) // 4,
+                     int(np.ceil(abs(out_shift[0]) + abs(out_shift[1]))) + 3))
+    if a.shape[0] > 2 * mgn and a.shape[1] > 2 * mgn:
+        av = a[mgn:-mgn, mgn:-mgn].ravel()
+        bv = b[mgn:-mgn, mgn:-mgn].ravel()
+    else:
+        av, bv = a.ravel(), b.ravel()
+    ncc = 0.0 if (av.std() < 1e-6 or bv.std() < 1e-6) else float(np.corrcoef(av, bv)[0, 1])
+    return tuple(float(s) for s in out_shift), max(ncc, 1e-6)
 
 
 def find_adjacent_pairs(tile_positions, pixel_size, tile_shape, min_overlap=15):
