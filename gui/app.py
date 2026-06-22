@@ -1309,8 +1309,14 @@ class StitcherGUI(QMainWindow):
         downsample_layout.addWidget(QLabel("Downsample:"))
         self.downsample_spin = QSpinBox()
         self.downsample_spin.setRange(1, 8)
-        self.downsample_spin.setValue(2)
-        self.downsample_spin.setToolTip("Lower = slower but more accurate")
+        # Default 1 = full-resolution registration = sub-pixel accuracy. Downsampling
+        # coarsens the recovered shift by the same factor, so >1 trades accuracy for
+        # speed (the registration-only cost; output resolution is unaffected).
+        self.downsample_spin.setValue(1)
+        self.downsample_spin.setToolTip(
+            "Registration downsample. 1 = full-resolution = sub-pixel accurate "
+            "(slower); higher = faster but coarser registration."
+        )
         downsample_layout.addWidget(self.downsample_spin)
         downsample_layout.addStretch()
         settings_layout.addWidget(self.downsample_widget)
