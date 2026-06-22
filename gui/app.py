@@ -142,7 +142,7 @@ class PreviewWorker(QThread):
         darkfield=None,
         registration_z=None,
         registration_t=0,
-        registration_channel=0,
+        registration_channel=None,
         outlier_rel_thresh=0.5,
         outlier_abs_thresh=2.0,
     ):
@@ -381,7 +381,7 @@ def _run_fusion_pipeline(
     darkfield=None,
     registration_z=None,
     registration_t=0,
-    registration_channel=0,
+    registration_channel=None,
     log_fn=None,
 ):
     """Shared stitching pipeline used by both single and batch workers.
@@ -508,7 +508,7 @@ class FusionWorker(QThread):
         darkfield=None,
         registration_z=None,
         registration_t=0,
-        registration_channel=0,
+        registration_channel=None,
         outlier_rel_thresh=0.5,
         outlier_abs_thresh=2.0,
     ):
@@ -1701,7 +1701,9 @@ class StitcherGUI(QMainWindow):
             self.reg_channel_combo.setVisible(has_multi_channel)
             if has_multi_channel:
                 self.reg_channel_combo.clear()
-                self.reg_channel_combo.addItems(self.dataset_channel_names)
+                # "Auto" (index 0) lets the pipeline pick the highest-tissue-contrast
+                # channel per dataset; the named channels below are manual overrides.
+                self.reg_channel_combo.addItems(["Auto"] + list(self.dataset_channel_names))
                 self.reg_channel_combo.setCurrentIndex(0)
 
     def on_blend_toggled(self, checked):
@@ -2008,13 +2010,21 @@ class StitcherGUI(QMainWindow):
         else:
             self._run_single(blend_pixels, fusion_mode, flatfield, darkfield)
 
+    def _selected_registration_channel(self):
+        """Registration channel from the combo, or None for 'Auto' (let the pipeline
+        auto-pick by tissue contrast). Combo index 0 is 'Auto'; named channels follow.
+        Single-channel datasets also return None (auto trivially resolves to channel 0).
+        """
+        if self.dataset_n_channels <= 1:
+            return None
+        idx = self.reg_channel_combo.currentIndex()
+        return None if idx <= 0 else idx - 1
+
     def _run_single(self, blend_pixels, fusion_mode, flatfield, darkfield):
         # Get registration z/t values (None means use default middle z)
         registration_z = self.reg_z_spin.value() if self.dataset_n_z > 1 else None
         registration_t = self.reg_t_spin.value() if self.dataset_n_t > 1 else 0
-        registration_channel = (
-            self.reg_channel_combo.currentIndex() if self.dataset_n_channels > 1 else 0
-        )
+        registration_channel = self._selected_registration_channel()
 
         self.worker = FusionWorker(
             self.drop_area.file_path,
@@ -2154,9 +2164,7 @@ class StitcherGUI(QMainWindow):
         # Get registration z/t values (None means use default middle z)
         registration_z = self.reg_z_spin.value() if self.dataset_n_z > 1 else None
         registration_t = self.reg_t_spin.value() if self.dataset_n_t > 1 else 0
-        registration_channel = (
-            self.reg_channel_combo.currentIndex() if self.dataset_n_channels > 1 else 0
-        )
+        registration_channel = self._selected_registration_channel()
 
         self.preview_worker = PreviewWorker(
             self.drop_area.file_path,

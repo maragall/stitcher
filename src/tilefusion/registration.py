@@ -170,6 +170,24 @@ def find_adjacent_pairs(tile_positions, pixel_size, tile_shape, min_overlap=15):
     return adjacent_pairs
 
 
+def rotation_aware_max_shift(adjacent_pairs, floor=100, budget_deg=3.0):
+    """Residual-shift rejection cap (px/axis), adaptive to inter-tile spacing.
+
+    A real stage->image rotation theta induces a perpendicular residual of about
+    ``tan(theta) * inter_tile_spacing`` at each seam. A fixed cap therefore clips
+    legitimate residuals on widely-spaced mosaics once theta grows. Scaling the cap with
+    the median spacing lets registration tolerate rotation up to ``budget_deg`` (default
+    3 deg, covering the scientist's 1-2 deg spec with margin) without admitting the much
+    larger shifts of a genuinely spurious peak. Floored so small-spacing datasets are
+    unchanged from the historical 100 px cap.
+    """
+    if not adjacent_pairs:
+        return (floor, floor)
+    spacings = [max(abs(p[2]), abs(p[3])) for p in adjacent_pairs]
+    cap = max(floor, int(np.tan(np.radians(budget_deg)) * float(np.median(spacings))))
+    return (cap, cap)
+
+
 def compute_pair_bounds(adjacent_pairs, tile_shape):
     """
     Compute overlap bounds for each adjacent pair.

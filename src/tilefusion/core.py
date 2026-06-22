@@ -33,6 +33,7 @@ from .registration import (
     find_adjacent_pairs,
     register_pairs_batched,
     register_pairs_readahead,
+    rotation_aware_max_shift,
 )
 from .fusion import fuse_plane
 from .optimization import (
@@ -103,7 +104,7 @@ class TileFusion:
         max_workers: int = 8,
         debug: bool = False,
         metrics_filename: str = "metrics.json",
-        channel_to_use: int = 0,
+        channel_to_use: Optional[int] = None,
         multiscale_downsample: str = "stride",
         region: Optional[str] = None,
         flatfield: Optional[np.ndarray] = None,
@@ -132,6 +133,7 @@ class TileFusion:
         self._init_pipeline_state()
         self._init_corrections(flatfield, darkfield)
         self._init_handle_storage()
+        self._resolve_registration_channel()
 
     def _resolve_paths(
         self, tiff_path: Union[str, Path], output_path: Union[str, Path]
@@ -245,6 +247,63 @@ class TileFusion:
         if multiscale_downsample not in ("stride", "block_mean"):
             raise ValueError('multiscale_downsample must be "stride" or "block_mean".')
         self.multiscale_downsample = multiscale_downsample
+
+    def _resolve_registration_channel(self) -> None:
+        """Resolve the registration channel: auto-pick from tissue structure when the
+        caller did not set one (channel_to_use is None), else validate and keep the
+        caller's explicit choice (the manual override)."""
+        if self.channel_to_use is None:
+            self.channel_to_use = self._auto_pick_channel()
+        elif not (0 <= self.channel_to_use < self.channels):
+            raise ValueError(
+                f"channel_to_use={self.channel_to_use} out of range [0, {self.channels})"
+            )
+
+    def _auto_pick_channel(self, n_sample: int = 6, crop: int = 512) -> int:
+        """Pick the registration channel with the most tissue structure, per dataset.
+
+        Tissue structure is scored by intensity contrast (std) over a central crop of a
+        sample of tiles. std was validated across datasets (RNAScope, 10x mouse brain)
+        to track registration quality and reliably reject the worst channel; raw
+        high-frequency / spectral-flatness metrics are deliberately NOT used because they
+        reward noise (they picked the worst, signal-poor channel). The pick is global to
+        the dataset and is overridden by an explicit channel_to_use.
+        """
+        if self.channels <= 1:
+            return 0
+        n = self.n_tiles
+        idxs = list(range(0, n, max(1, n // max(1, n_sample))))[:n_sample] or [0]
+        scores = np.zeros(self.channels, dtype=np.float64)
+        used = 0
+        cy, cx = self.Y // 2, self.X // 2
+        ys = slice(max(0, cy - crop), cy + crop)
+        xs = slice(max(0, cx - crop), cx + crop)
+        for k in idxs:
+            try:
+                tile = np.asarray(self._read_tile(k))
+            except Exception:
+                continue
+            if tile.ndim != 3 or tile.shape[0] != self.channels:
+                continue
+            used += 1
+            for c in range(self.channels):
+                scores[c] += float(tile[c][ys, xs].std())
+        if used == 0:
+            return 0
+        scores /= used
+        pick = int(np.argmax(scores))
+        order = np.argsort(scores)[::-1]
+        spread = (scores[order[0]] - scores[order[-1]]) / (scores[order[0]] + 1e-9)
+        print(
+            f"Auto-selected registration channel {pick} by tissue contrast "
+            f"(per-channel std over {used} tiles: {[round(float(s), 1) for s in scores]})"
+        )
+        if spread < 0.05:
+            print(
+                "WARNING: channels have near-identical contrast; the registration-channel "
+                "choice is ambiguous -- consider setting channel_to_use explicitly."
+            )
+        return pick
 
     def _init_chunking(self) -> None:
         """Set the output chunk shape and its derived y/x sizes."""
@@ -583,15 +642,16 @@ class TileFusion:
         sw = ssim_window or self.ssim_window
         self.pairwise_metrics.clear()
 
-        # Residual-shift sanity cap (pixels, per axis). After cropping to the overlap,
-        # the recovered residual should be a few px; a residual beyond this is almost
-        # certainly a spurious phase-correlation peak, so that pair is dropped.
-        max_shift = (100, 100)
-
         # Find adjacent pairs
         adjacent_pairs = find_adjacent_pairs(
             self._tile_positions, self._pixel_size, (self.Y, self.X)
         )
+
+        # Residual-shift sanity cap (px/axis), adaptive to inter-tile spacing so it
+        # tolerates a real stage->image rotation up to ~3 deg (the scientist's 1-2 deg
+        # spec + margin) without clipping legitimate residuals, while still rejecting the
+        # far larger shifts of a spurious phase-correlation peak.
+        max_shift = rotation_aware_max_shift(adjacent_pairs)
 
         if self._debug:
             print(f"Found {len(adjacent_pairs)} adjacent tile pairs to register")
