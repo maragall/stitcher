@@ -176,6 +176,13 @@ class PreviewWorker(QThread):
                 channel_to_use=self.registration_channel,
             )
 
+            # Echo the settings actually in use so toggling a control is verifiable
+            # from the log (channel is the resolved value after any 'Auto' pick).
+            self.progress.emit(
+                f"Preview settings IN USE -> registration channel: {tf_full.channel_to_use}"
+                f"  |  downsample: {self.downsample_factor}x"
+            )
+
             positions = np.array(tf_full._tile_positions)
 
             # Build proper grid mapping for irregular grids
