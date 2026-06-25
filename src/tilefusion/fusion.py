@@ -9,7 +9,6 @@ from typing import Callable, Tuple
 
 import numpy as np
 from numba import njit, prange
-from scipy.ndimage import shift as ndi_shift
 from tqdm import tqdm
 
 from .utils import USING_GPU, cp
@@ -54,6 +53,105 @@ def accumulate_tile_shard(
         w_val = w2d[y_i, x_i]
         for c in range(C):
             fused[c, gy, gx] += sub[c, y_i, x_i] * w_val
+            weight[c, gy, gx] += w_val
+
+
+@njit(parallel=True)
+def accumulate_tile_shard_shifted(
+    fused: np.ndarray,
+    weight: np.ndarray,
+    tile: np.ndarray,
+    w2d: np.ndarray,
+    y_off: int,
+    x_off: int,
+    sy0: int,
+    sx0: int,
+    sub_Y: int,
+    sub_X: int,
+    fy: float,
+    fx: float,
+) -> None:
+    """Weighted accumulation with an on-the-fly bilinear sub-pixel shift.
+
+    Algebraically identical to
+        shifted = ndi_shift(tile, (0, fy, fx), order=1, mode="nearest")
+        accumulate_tile_shard(fused, weight, shifted[:, sy0:sy0+sub_Y, sx0:sx0+sub_X],
+                              w2d, y_off, x_off)
+    but interpolates ONLY the pixels actually blended (no full-tile resample pass)
+    and reads the original, un-shifted tile -- so the same tile is reused across
+    every block it overlaps instead of being re-shifted per block.
+
+    scipy's order-1 spline with mode="nearest" is edge-clamped bilinear
+    interpolation, and shift convention is output[p] = input[p - shift], so the
+    source coordinate for plane position (sy0+y_i, sx0+x_i) is that minus (fy, fx).
+    Passing the FULL tile (not a pre-sliced sub-region) lets sub-region-edge
+    pixels read their true in-tile neighbours, matching shift-then-slice exactly.
+
+    Parameters
+    ----------
+    fused, weight : float32[C, Yp, Xp]   accumulation + weight buffers (block-local)
+    tile : float32[C, tY, tX]            the ORIGINAL, un-shifted FOV
+    w2d : float32[sub_Y, sub_X]          feather weight for this sub-region
+    y_off, x_off : int                   block-local destination origin
+    sy0, sx0 : int                       sub-region start in tile coords
+    sub_Y, sub_X : int                   sub-region size
+    fy, fx : float                       sub-pixel remainder in [0, 1)
+    """
+    C, Yp, Xp = fused.shape
+    _, tY, tX = tile.shape
+    total = sub_Y * sub_X
+
+    for idx in prange(total):
+        y_i = idx // sub_X
+        x_i = idx % sub_X
+        gy = y_off + y_i
+        gx = x_off + x_i
+        if gy < 0 or gy >= Yp or gx < 0 or gx >= Xp:
+            continue
+
+        # Source coordinate in the original tile (scipy shift convention).
+        src_y = (sy0 + y_i) - fy
+        src_x = (sx0 + x_i) - fx
+        y0 = int(np.floor(src_y))
+        x0 = int(np.floor(src_x))
+        wy = src_y - y0
+        wx = src_x - x0
+        y1 = y0 + 1
+        x1 = x0 + 1
+
+        # Nearest-edge clamp (mode="nearest"): out-of-range neighbours fold to the
+        # edge pixel, so the interpolation weight simply re-weights the same value.
+        if y0 < 0:
+            y0 = 0
+        elif y0 > tY - 1:
+            y0 = tY - 1
+        if y1 < 0:
+            y1 = 0
+        elif y1 > tY - 1:
+            y1 = tY - 1
+        if x0 < 0:
+            x0 = 0
+        elif x0 > tX - 1:
+            x0 = tX - 1
+        if x1 < 0:
+            x1 = 0
+        elif x1 > tX - 1:
+            x1 = tX - 1
+
+        w00 = (1.0 - wy) * (1.0 - wx)
+        w01 = (1.0 - wy) * wx
+        w10 = wy * (1.0 - wx)
+        w11 = wy * wx
+        w_val = w2d[y_i, x_i]
+
+        for c in range(C):
+            v = (
+                w00 * tile[c, y0, x0]
+                + w01 * tile[c, y0, x1]
+                + w10 * tile[c, y1, x0]
+                + w11 * tile[c, y1, x1]
+            )
+            fused[c, gy, gx] += v * w_val
             weight[c, gy, gx] += w_val
 
 
@@ -208,13 +306,8 @@ def fuse_plane(
             for t_idx in iterator:
                 tile_all = read_tile(t_idx, z_level, time_idx)
 
-                # Honour the sub-pixel offset: shift the tile content by the fractional
-                # remainder (Y, X only; not the channel axis) before it is placed at the
-                # integer-floor origin. (Per-block full-tile shift -- a speed target for
-                # the later pass; correctness first.)
+                # Sub-pixel remainder (Y, X only) honouring the registered position.
                 fy, fx = fracs[t_idx]
-                if fy or fx:
-                    tile_all = ndi_shift(tile_all, (0.0, fy, fx), order=1, mode="nearest")
 
                 ty0, ty1, tx0, tx1 = tile_bounds[t_idx]  # this FOV's rectangle on the plane
 
@@ -234,11 +327,19 @@ def fuse_plane(
                 # Feather weight for exactly this FOV-local sub-region (A1's window, sliced).
                 w2d = y_profile[sy0:sy1, None] * x_profile[None, sx0:sx1]
 
-                # Same blend kernel as the whole-plane path: accumulate this FOV's
-                # sub-region into the block at its block-local origin (oy0, ox0).
-                accumulate_tile_shard(
-                    fused_block, weight_sum, tile_all[:, sy0:sy1, sx0:sx1], w2d, oy0, ox0
-                )
+                # Accumulate this FOV's sub-region into the block at (oy0, ox0). The
+                # sub-pixel shift is folded into the blend (bilinear sample of the
+                # original tile) so we never resample the whole tile per block; a
+                # zero remainder takes the no-interp fast path (bit-identical).
+                if fy == 0.0 and fx == 0.0:
+                    accumulate_tile_shard(
+                        fused_block, weight_sum, tile_all[:, sy0:sy1, sx0:sx1], w2d, oy0, ox0
+                    )
+                else:
+                    accumulate_tile_shard_shifted(
+                        fused_block, weight_sum, tile_all, w2d, oy0, ox0,
+                        sy0, sx0, sy1 - sy0, sx1 - sx0, fy, fx,
+                    )
 
             # One blend, shared with _fuse_tiles_full_plane: normalize in place,
             # zero where no FOV covered (weight 0). No mask temporary.
