@@ -131,6 +131,7 @@ class PreviewWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(object, object, object)  # color_before, color_after, fused
     error = pyqtSignal(str)
+    resolved_channel = pyqtSignal(int)  # channel auto-pick resolved to (for the 'Auto' label)
 
     def __init__(
         self,
@@ -182,6 +183,8 @@ class PreviewWorker(QThread):
                 f"Preview settings IN USE -> registration channel: {tf_full.channel_to_use}"
                 f"  |  downsample: {self.downsample_factor}x"
             )
+            # Surface the resolved channel so the 'Auto' dropdown can show the pick.
+            self.resolved_channel.emit(int(tf_full.channel_to_use))
 
             positions = np.array(tf_full._tile_positions)
 
@@ -503,6 +506,7 @@ class FusionWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(str, float)  # output_path, elapsed_time
     error = pyqtSignal(str)
+    resolved_channel = pyqtSignal(int)  # channel auto-pick resolved to (for the 'Auto' label)
 
     def __init__(
         self,
@@ -632,6 +636,8 @@ class FusionWorker(QThread):
             )
             load_time = time.time() - step_start
             self.progress.emit(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each) [{load_time:.1f}s]")
+            # Surface the resolved channel so the 'Auto' dropdown can show the pick.
+            self.resolved_channel.emit(int(tf.channel_to_use))
 
             # Auto-compute blend_pixels from tile overlap if requested
             if self.blend_pixels is None:
@@ -2033,6 +2039,21 @@ class StitcherGUI(QMainWindow):
         idx = self.reg_channel_combo.currentIndex()
         return None if idx <= 0 else idx - 1
 
+    def _on_resolved_channel(self, ch):
+        """Relabel the combo's 'Auto' entry (index 0) to show which channel the
+        pipeline auto-picked, e.g. 'Auto (DAPI)'. Only the display text changes;
+        index 0 still maps to None in _selected_registration_channel, so the
+        auto-pick behaviour is untouched. Resets to plain 'Auto' on dataset reload
+        (the combo is repopulated there).
+        """
+        if self.reg_channel_combo.count() == 0:
+            return
+        if 0 <= ch < len(self.dataset_channel_names):
+            name = self.dataset_channel_names[ch]
+        else:
+            name = f"channel {ch}"
+        self.reg_channel_combo.setItemText(0, f"Auto ({name})")
+
     def _run_single(self, blend_pixels, fusion_mode, flatfield, darkfield):
         # Get registration z/t values (None means use default middle z)
         registration_z = self.reg_z_spin.value() if self.dataset_n_z > 1 else None
@@ -2056,6 +2077,7 @@ class StitcherGUI(QMainWindow):
         self.worker.progress.connect(self.log)
         self.worker.finished.connect(self.on_fusion_finished)
         self.worker.error.connect(self.on_fusion_error)
+        self.worker.resolved_channel.connect(self._on_resolved_channel)
         self.worker.start()
 
     def _run_batch(self, blend_pixels, fusion_mode, flatfield, darkfield):
@@ -2195,6 +2217,7 @@ class StitcherGUI(QMainWindow):
         self.preview_worker.progress.connect(self.log)
         self.preview_worker.finished.connect(self.on_preview_finished)
         self.preview_worker.error.connect(self.on_preview_error)
+        self.preview_worker.resolved_channel.connect(self._on_resolved_channel)
         self.preview_worker.start()
 
     def on_preview_finished(self, color_before, color_after, fused):
