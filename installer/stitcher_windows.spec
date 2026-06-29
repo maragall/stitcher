@@ -25,11 +25,14 @@ try:
 except ImportError:
     pass
 
-napari_metadata = copy_metadata('imageio') + copy_metadata('napari') + copy_metadata('scikit-learn')
-try:
-    napari_metadata += copy_metadata('napari-svg')
-except Exception:
-    pass
+napari_metadata = copy_metadata('imageio') + copy_metadata('napari')
+# scikit-learn was only ever present transitively via the old BaSiCPy stack (now
+# removed); include its metadata only if it actually happens to be installed.
+for _opt in ('scikit-learn', 'napari-svg'):
+    try:
+        napari_metadata += copy_metadata(_opt)
+    except Exception:
+        pass
 
 a = Analysis(
     ['entry.py'],
@@ -43,9 +46,7 @@ a = Analysis(
         'scipy', 'scipy.ndimage', 'scipy.optimize', 'scipy.sparse',
         'tifffile', 'tensorstore', 'ml_dtypes',
         'numba', 'numba.core',
-        'basicpy', 'basicpy.basicpy', 'basicpy.metrics', 'basicpy._jax_routines',
-        'hyperactive', 'gradient_free_optimizers',
-        'sklearn', 'sklearn.ensemble',
+        'threadpoolctl',
         'pandas', 'tqdm', 'psutil',
         'qtpy', 'qtpy.QtCore', 'qtpy.QtGui', 'qtpy.QtWidgets',
         'PyQt5', 'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets', 'PyQt5.QtSvg',
