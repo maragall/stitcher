@@ -54,7 +54,6 @@ jobs:
         run: codesign --verify --deep --strict --verbose=2 dist/CephlaStitcher.app || true
 
       - name: Post-build smoke test
-        continue-on-error: true
         env:
           QT_QPA_PLATFORM: offscreen
         run: dist/CephlaStitcher.app/Contents/MacOS/stitcher-gui --smoke-test

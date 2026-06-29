@@ -50,7 +50,6 @@ jobs:
         run: python -m PyInstaller stitcher_linux.spec --noconfirm --distpath ../dist --workpath ../build --clean
 
       - name: Post-build smoke test
-        continue-on-error: true
         run: |
           export QT_QPA_PLATFORM=offscreen
           xvfb-run --auto-servernum dist/stitcher-gui/stitcher-gui --smoke-test

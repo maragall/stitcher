@@ -59,6 +59,54 @@ def run():
 
         assert add(2, 3) == 5
 
+    def t_numba_parallel():
+        # Fusion uses @njit(parallel=True)+prange; its threading layer (TBB/OpenMP) is
+        # the most platform-fragile piece, so exercise it explicitly -- not just @njit.
+        import numpy as np
+        from numba import njit, prange
+
+        @njit(parallel=True)
+        def psum(a):
+            t = 0.0
+            for i in prange(a.shape[0]):
+                t += a[i]
+            return t
+
+        assert psum(np.ones(256, dtype=np.float64)) == 256.0
+
+    def t_tensorstore_zarr3():
+        # The actual output driver -- write + read a tiny zarr3 array, not just import.
+        import numpy as np
+        import tensorstore as ts
+
+        d = tempfile.mkdtemp()
+        arr = ts.open(
+            {
+                "driver": "zarr3",
+                "kvstore": {"driver": "file", "path": d},
+                "metadata": {
+                    "shape": [8, 8],
+                    "data_type": "uint16",
+                    "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [8, 8]}},
+                },
+                "create": True,
+            }
+        ).result()
+        arr.write(np.ones((8, 8), dtype=np.uint16)).result()
+        assert int(np.asarray(arr.read().result()).sum()) == 64
+
+    def t_tilefusion():
+        # The shipped package itself + its key modules must import in the frozen app.
+        import tilefusion  # noqa: F401
+        from tilefusion import core, flatfield, fusion, registration  # noqa: F401
+
+    def t_threadpoolctl():
+        # BLAS-pinning dep added for the CPU audit; must be bundled for pinning to work.
+        from tilefusion.utils import limit_blas_threads
+
+        with limit_blas_threads(1):
+            pass
+
     def t_skimage():
         from skimage.registration import phase_cross_correlation  # noqa: F401
 
@@ -80,11 +128,15 @@ def run():
         ("scipy.ndimage zoom", t_scipy),
         ("tifffile read/write", t_tifffile),
         ("import tensorstore", t_tensorstore),
+        ("tensorstore zarr3 write/read", t_tensorstore_zarr3),
         ("numba jit", t_numba),
+        ("numba parallel (prange)", t_numba_parallel),
         ("skimage registration", t_skimage),
         ("import pandas", t_pandas),
         ("PyQt5 QApplication", t_pyqt5),
         ("napari viewer", t_napari),
+        ("import tilefusion + modules", t_tilefusion),
+        ("threadpoolctl BLAS limiter", t_threadpoolctl),
     ]
 
     for name, fn in tests:

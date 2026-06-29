@@ -42,7 +42,6 @@ jobs:
         run: python -m PyInstaller stitcher_windows.spec --noconfirm --distpath ../dist --workpath ../build --clean
 
       - name: Post-build smoke test
-        continue-on-error: true
         run: |
           $env:QT_QPA_PLATFORM = "offscreen"
           dist\stitcher-gui\stitcher-gui.exe --smoke-test
