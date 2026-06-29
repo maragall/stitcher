@@ -2406,6 +2406,7 @@ class StitcherGUI(QMainWindow):
 
             viewer = napari.Viewer()
             _add_fused_zarr(viewer, zarr_path, self._fused_channel_names(), self.log)
+            _snapshot_napari_on_close(viewer, Path(zarr_path).stem.replace(".ome", ""), self.log)
             napari.run()
         except Exception as e:
             self.log(f"Error opening Napari: {e}\n{traceback.format_exc()}")
@@ -2491,6 +2492,7 @@ class StitcherGUI(QMainWindow):
                     blending="additive",
                 )
                 del mip
+            _snapshot_napari_on_close(viewer, Path(zarr_path).stem.replace(".ome", "") + "_MIP", self.log)
             napari.run()
         except Exception as e:
             self.log(f"Error computing MIP: {e}\n{traceback.format_exc()}")
@@ -2580,6 +2582,51 @@ class _TSArray:
 
     def __getitem__(self, idx):
         return np.asarray(self._store[idx].read().result())
+
+
+def _snapshot_napari_on_close(viewer, name, log):
+    """Save a PNG of the napari window to the Desktop when the user closes it.
+
+    The screenshot must be taken *before* the window is destroyed, so we install a
+    Qt event filter that fires on the Close event and captures the whole window
+    (canvas + dock widgets). The filter is stashed on the viewer so it isn't garbage
+    collected while the window lives. Best-effort: any failure is logged, not raised.
+    """
+    try:
+        from datetime import datetime
+
+        from qtpy.QtCore import QEvent, QObject
+    except Exception:
+        return
+
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in str(name)) or "fused"
+
+    class _SnapshotFilter(QObject):
+        def __init__(self):
+            super().__init__()
+            self._done = False
+
+        def eventFilter(self, obj, event):
+            if event.type() == QEvent.Close and not self._done:
+                self._done = True
+                try:
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    desktop = Path.home() / "Desktop"
+                    desktop.mkdir(parents=True, exist_ok=True)
+                    out = desktop / f"stitcher_napari_{safe}_{ts}.png"
+                    viewer.window.screenshot(str(out), canvas_only=False)
+                    log(f"Saved napari snapshot: {out}")
+                except Exception as e:
+                    log(f"Could not save napari snapshot: {e}")
+            return False
+
+    try:
+        win = viewer.window._qt_window
+        filt = _SnapshotFilter()
+        win.installEventFilter(filt)
+        viewer._tf_snapshot_filter = filt  # keep a reference alive
+    except Exception as e:
+        log(f"Could not arm napari snapshot: {e}")
 
 
 def _add_fused_zarr(viewer, zarr_path, channel_names, log):
