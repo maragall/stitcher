@@ -218,3 +218,4 @@ CLAUDE.md
 
 # Memory profiler output (scratch run dirs; committed baselines live in docs/)
 profile_out*/
+docs/superpowers/
