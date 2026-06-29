@@ -1,0 +1,184 @@
+! git log --graph --all --format='%C(auto)%h%d %s %Cgreen(%cr) %C(bold blue)<%an>%Creset'                                                                                                                                                        
+  ⎿  * 34664be (HEAD -> main) test(reg-quality): synthetic 4-FOV registration quality fixture (3 hours ago) <maragall>
+     * 99b28ee perf(register): fix strip-batch size to the worker pool, drop RAM-derived sizing (23 hours ago) <maragall>
+     * a23f275 docs: replace asserted JIT note with measured blend benchmark (kept unified) (2 days ago) <maragall>                                                                                          
+     * 80ec461 test(fuse): pin direct-mode streaming placement (2 days ago) <maragall>
+     * cc094a3 refactor(fuse): unify chunked blend onto the numba kernels (one blend, not two) (2 days ago) <maragall>
+     * ad41ca9 docs: fold consistency fixes into the memory history; close fusion loop (2 days ago) <maragall>
+     * dc79f43 fix(fuse): dedupe single-channel broadcast, stream direct mode, surface viewer tracebacks (2 days ago) <maragall>
+     * fc52c65 refactor: dedupe fusion-path boilerplate (output-neutral) (2 days ago) <maragall>
+     * 2e54975 docs: in-the-weeds memory history + feather/pipeline figure (2 days ago) <maragall>                                                                                                           
+     * fc1e402 (origin/main, origin/HEAD) docs: distinct red/blue/green palette for the per-commit overlay (3 days ago) <maragall>
+     * 3e11b61 docs: memory optimization report + per-commit footprint overlay (3 days ago) <maragall>
+     * b047d0b fix(gui): read napari layers via tensorstore+dask, drop ome-zarr path (4 days ago) <maragall>
+     * e432cbf fix(gui): lazy-load napari viewer so display RAM stays flat (4 days ago) <maragall>
+     * 62f267a perf(fuse): fixed-size fusion block, remove RAM-derived sizing + full-plane switch (4 days ago) <maragall>
+     * e24be8d chore: ignore all profile_out* scratch dirs (baselines live in docs/) (4 days ago) <maragall>
+     * be659d5 docs: add test-condition (acquisition) table + complete after-set swimlanes (4 days ago) <maragall>
+     * a9729d3 docs: Phase 4 done — fuse memory -36% peak (conclusion + post-opt artifacts) (4 days ago) <maragall>
+     * 4ac2ba4 feat(profiling): conclusion CLI (overlay + improvement metrics) (4 days ago) <maragall>
+     * e8ca824 feat(profiling): before/after timeline-overlay figure (4 days ago) <maragall>
+     * a6840e5 perf(fuse): reuse block buffers + in-place divide + honest sizing (4 days ago) <maragall>
+     * 8f6ca44 test(fuse): pin chunked == full-plane output equivalence (opt guard) (4 days ago) <maragall>
+     * 9021dad docs: Phase 4 plan (fuse memory optimization + conclusion) (5 days ago) <maragall>
+     * cee3745 chore(profiling): archive pre-optimization baseline (peak ~3971 MB) (5 days ago) <maragall>
+     * 043845e docs: Phase 2 done; drop Phase 3 (manual Notion); Phase 5 prints metrics (5 days ago) <maragall>
+     * b8b90db polish(profiling): shelve variability+scan figures, add swimlane key box (5 days ago) <maragall>
+     * b74a97e harden(profiling): warn on empty per-pair run, guard tile_label, update CLI desc (5 days ago) <maragall>
+     * 2b12a85 feat(profiling): CLI --perpair wiring for Phase 2 analysis (5 days ago) <maragall>
+     * ca13f37 feat(profiling): Run B per-pair registration harness (5 days ago) <maragall>
+     * 987b06a feat(profiling): variability and scan-pattern figures (5 days ago) <maragall>
+     * ccb1c63 feat(profiling): swimlane scheduler and figure (5 days ago) <maragall>
+     * a4f16ca feat(profiling): pairs.csv writer (5 days ago) <maragall>
+     * 9fc8a59 feat(profiling): per-pair variability (CV) stats (5 days ago) <maragall>
+     * b274b39 feat(profiling): tile grid mapping, labels, and scan-pattern inference (5 days ago) <maragall>
+     * 4c795cf feat(profiling): non-invasive per-pair registration recorder (5 days ago) <maragall>
+     * 71fa5e7 docs: Phase 2 plan + Phase 4 named targets (fuse buffer, RAM cap) (5 days ago) <maragall>
+     * 5f0df7e docs: refine Phase 2 scope (non-invasive) and Phase 4/5 (baseline + conclusion set) (5 days ago) <maragall>
+     * 05b7196 docs: record Phase 1 done + add Phase 4 (optimization) and Phase 5 (before/after) (5 days ago) <maragall>
+     * 7d6d957 fix(profiling): center stage labels over their region (clarity) (5 days ago) <maragall>
+     * ed5bd69 fix(profiling): omit negligible-duration stages from timeline boundaries (5 days ago) <maragall>
+     * 3704747 fix(profiling): stack near-coincident stage labels to avoid overlap (5 days ago) <maragall>
+     * 013253b style(profiling): thin the bold TOTAL RSS line (2.4 -> 1.8) (5 days ago) <maragall>
+     * fe57e93 polish(profiling): warn on partial results in CLI; dedup test imports (5 days ago) <maragall>
+     * c57faf9 feat(profiling): CLI entrypoint for Phase 1 profiling (5 days ago) <maragall>
+     * 2963ea1 fix(profiling): guarantee cleanup and return partial results on harness failure (5 days ago) <maragall>
+     * d508c86 feat(profiling): pipeline harness with stage wrapping (5 days ago) <maragall>
+     * 05a7949 feat(profiling): timeline, per-function, and Pareto figures (5 days ago) <maragall>
+     * 25260cc feat(profiling): timeline and functions CSV writers (5 days ago) <maragall>
+     * fd140b7 feat(profiling): stage timer and sample-to-stage assignment (5 days ago) <maragall>
+     * 5b178fb feat(profiling): per-function MB·s ranking (5 days ago) <maragall>
+     * e5a6fd4 feat(profiling): tracemalloc allocation sampler (5 days ago) <maragall>
+     * ffebf66 feat(profiling): map allocation lines to enclosing function (5 days ago) <maragall>
+     * 8a00870 style(profiling): black-format sampler + test (5 days ago) <maragall>
+     * fbfbb04 feat(profiling): RSS sampler thread (5 days ago) <maragall>
+     * 6b2badd feat(profiling): scaffold package, deps, and pytest path (5 days ago) <maragall>
+     * 74d6691 docs: Add Phase 1 implementation plan for memory profiler (5 days ago) <maragall>
+     * 3b6c464 docs: Add memory-footprint profiler design spec (5 days ago) <maragall>
+     *   f43badc Merge remote-tracking branch 'origin/main' into integration (7 weeks ago) <Cesar Alfonzo>
+     |\
+     | * 1ead59f style: fix black formatting in view_in_napari.py (#3) (7 weeks ago) <maragall>
+     | * d032c62 fix: flatfield widget button clipping on macOS (#2) (7 weeks ago) <maragall>
+     * | 53d7ef1 fix(mac): Don't force VisPy's legacy QGLWidget on macOS — blank canvas (8 weeks ago) <maragall>
+     * | 8e4925e ci: Bump to Python 3.14 with BaSiCPy --no-deps workaround (8 weeks ago) <maragall>
+     * | 0935f3e fix(ci): Roll back Python 3.14 to 3.13 — scipy wheel not available (8 weeks ago) <maragall>
+     * | ee6df47 chore: Migrate to Python 3.14 + bake in VisPy Blackwell GPU patch (8 weeks ago) <maragall>
+     * | 015ed0c fix: TileFusion call uses channel_to_use, not registration_channel (8 weeks ago) <maragall>
+     * | cf5277d fix: Restore inline imports at top of FusionWorker.run() lost in merge (8 weeks ago) <maragall>
+     * | 9d1279a feat(mac): Add macOS build to integration branch (8 weeks ago) <maragall>
+     * |   57e06f6 Merge build-cephla-latest into integration (8 weeks ago) <maragall>
+     |\ \
+     | * | 347ba97 Add napari-ome-zarr plugin to builds (2 months ago) <maragall>
+     | * | 4ee3d02 Add build infrastructure to Cephla-Lab latest (2 months ago) <maragall>
+     | * |   bd2cee0 Merge pull request #22 from Alpaca233/feature/batch-processing (2 months ago) <You Yan>
+     | |\ \
+     | | |/
+     | |/|
+     | | * c6b94dc style: Fix pre-existing black formatting in view_in_napari.py (2 months ago) <You Yan>
+     | | * 2f06e75 style: Fix black formatting for CI (Python 3.11 target) (2 months ago) <You Yan>
+     | | * 6ab02b6 fix: Keep Napari button enabled, open empty viewer without output (2 months ago) <You Yan>
+     | | * 4ffa656 fix: Address Copilot review comments (2 months ago) <You Yan>
+     | | * 61aec2a fix: Address PR review — crash bug, error handling, UI re-enable (2 months ago) <You Yan>
+     | | * 8cc02ef refactor: Extract shared fusion pipeline, remove redundant state (2 months ago) <You Yan>
+     | | * ac9d896 feat: Add batch processing for multiple folders in GUI (2 months ago) <You Yan>
+     | |/
+     * |   fa2c463 Merge user-feedback-fixes into integration (8 weeks ago) <maragall>
+     |\ \
+     | |/
+     |/|
+     | * 8326cba Remove Export OME-TIFF button from GUI (3 months ago) <maragall>
+     | * 91224db fix: Flatten Windows artifact — .exe and README at top level (3 months ago) <maragall>
+     | * 8fa9a1b fix: Proper OME-TIFF export with metadata, OOM-safe via disk memmap (3 months ago) <maragall>
+     | * 7c32ebe fix: OOM-safe napari viewer, MIP, and OME-TIFF export (3 months ago) <maragall>
+     | * 60e759d fix: Proper napari bundling with hooks from working builds (3 months ago) <maragall>
+     | * 640789a fix: Bundle napari and all submodules in PyInstaller specs (3 months ago) <maragall>
+     | * e0c35fe fix: Unified logging, progress bars, OOM-safe flatfield, open-existing UX (3 months ago) <maragall>
+     | * e74999e fix: OOM-safe flatfield for large z-stacks, page-level TIFF reads (3 months ago) <maragall>
+     | * 6686ec8 fix: Add missing PyInstaller spec files to build (3 months ago) <maragall>
+     | * 19e3c2d fix: Multi-channel flatfield + registration, UI polish, build packaging (3 months ago) <maragall>
+     | * a4d82e7 fix: Make Cephla branding visible on light Fusion theme (3 months ago) <maragall>
+     | * c6a4e63 fix: Visible Cephla branding — logo icon + watermark (3 months ago) <maragall>
+     | * 6718366 fix: Address user feedback — quality, UX, and robustness improvements (3 months ago) <maragall>
+     |/
+     | * dd94f2a (origin/feature/gpu-acceleration) Document GPU path placeholder values in phase_cross_correlation (4 months ago) <Hongquan Li>
+     | * 149784b Cosmetic cleanups and fix shift_array CPU/GPU consistency (4 months ago) <Hongquan Li>
+     | * 4a111c2 Fix histogram matching bug and improve type hints (4 months ago) <Hongquan Li>
+     | * afe7e4e Add type hints to public functions in utils.py (4 months ago) <Hongquan Li>
+     | * 99a46a8 chore: Clean up unused imports and variables (4 months ago) <Hongquan Li>
+     | * ea5d0f5 test: Refactor tests to use rng fixture and pytest class style (4 months ago) <Hongquan Li>
+     | * 91c7ea9 refactor: Add __all__ export list and document legacy compatibility vars (4 months ago) <Hongquan Li>
+     | * f2bd5a1 fix: Guard against 1-pixel arrays in _shift_array_torch (4 months ago) <Hongquan Li>
+     | * 0e03178 refactor: Add _PARABOLIC_EPS constant for subpixel refinement (4 months ago) <Hongquan Li>
+     | * 21d2d45 test: Add subpixel phase correlation tests (4 months ago) <Hongquan Li>
+     | * a297df5 test: Add CPU fallback and dtype preservation tests (4 months ago) <Hongquan Li>
+     | * a2d1eb9 refactor: Add named constants for magic numbers (_FFT_EPS, _SSIM_K1, _SSIM_K2) (4 months ago) <Hongquan Li>
+     | * f9473c9 refactor: Extract duplicate data_range calculation in compute_ssim (4 months ago) <Hongquan Li>
+     | * bfefa67 fix: Handle 2D block_size for 3D arrays in _block_reduce_torch (4 months ago) <Hongquan Li>
+     | * b627a15 feat: Add dtype preservation to shift_array, match_histograms, block_reduce (4 months ago) <Hongquan Li>
+     | * a51bc18 fix: Remove unused variables in _match_histograms_torch (4 months ago) <Hongquan Li>
+     | * 1eae788 style: Apply black formatting (4 months ago) <Hongquan Li>
+     | * 017d0f8 feat: Add GPU-accelerated operations via PyTorch (4 months ago) <Hongquan Li>
+     |/
+     * d0909fc feat: Add z-level, timepoint, and channel selection for registration (#19) (4 months ago) <You Yan>
+     * e888b23 refactor: Simplify UI styling and layout (#12) (6 months ago) <hongquanli>
+     * a15dbad Fix hatchling direct reference error for BaSiCPy (#15) (6 months ago) <hongquanli>
+     * 81a60e4 Add flatfield optional dependency with QI2lab/BaSiCPy (#14) (6 months ago) <hongquanli>
+     *   d740ebb Merge pull request #11 from hongquanli/feature/flatfield-correction (6 months ago) <hongquanli>
+     |\
+     | * 4770732 style: Run black formatter (6 months ago) <Hongquan Li>
+     | * 6ecef5d Address PR review comments #3, #5, #6 (6 months ago) <Hongquan Li>
+     | * 39448e8 Address PR review comments #1, #2 (6 months ago) <Hongquan Li>
+     | * 543f4df Address PR review comments #1, #2 (6 months ago) <Hongquan Li>
+     | * e7082fe Address PR review comments #3, #6 (6 months ago) <Hongquan Li>
+     | * 0be9878 Address PR review comments #2, #3, #4 (6 months ago) <Hongquan Li>
+     | * 103e5a9 Address PR review comments #2, #7, #11-14 (6 months ago) <Hongquan Li>
+     | * 4ed5f0b Address PR review comments #1, #6, #7, #8, #15 (6 months ago) <Hongquan Li>
+     | * 1728628 Address PR review comments #8, #14, #16 (6 months ago) <Hongquan Li>
+     | * ed4e8d4 Address PR review comments #9, #10, #11, #12 (6 months ago) <Hongquan Li>
+     | * 9bd52a7 Fix View button tooltip to remove napari reference (6 months ago) <Hongquan Li>
+     | * 5256c66 Switch flatfield viewer to matplotlib with colorbars (6 months ago) <Hongquan Li>
+     | * d9720df Add constant darkfield option for physically accurate correction (6 months ago) <Hongquan Li>
+     | * a439d80 Add flatfield UI improvements: Clear button, auto-load, status text (6 months ago) <Hongquan Li>
+     | * 9688eb7 Add flatfield UI improvements: Clear button, auto-load, status text (6 months ago) <Hongquan Li>
+     | * d7b070c Revert "refactor: Optimize flatfield UI for simplicity" (6 months ago) <Hongquan Li>
+     | * 2ad85af refactor: Optimize flatfield UI for simplicity (6 months ago) <Hongquan Li>
+     | * b35998e feat: Add flatfield correction with BaSiCPy integration (6 months ago) <Hongquan Li>
+     | * 45af379 chore: Add CLAUDE.md to .gitignore (6 months ago) <Hongquan Li>
+     * | d180822 chore: Add CLAUDE.md to .gitignore (#10) (6 months ago) <hongquanli>
+     |/
+     * 1a52ee6 feat: Auto-detect parallel mode, fix overlap-based RAM estimation (#9) (6 months ago) <hongquanli>
+     * b7f798b Optimize OME-TIFF reader performance (#3) (6 months ago) <hongquanli>
+     * 832d1d6 Add z/t slider support with axis labels in napari viewer (6 months ago) <Hongquan Li>
+     * 922fcb2 Add OME-TIFF tiles format support (6 months ago) <Hongquan Li>
+     * 7c8e8a6 Add multi-region viewer support in GUI (6 months ago) <Hongquan Li>
+     * 6049eb6 Add multi-region support (6 months ago) <Hongquan Li>
+     * a2a018f Add z-stack and time series support (6 months ago) <Hongquan Li>
+     * 849b579 Add support for region-based naming in individual TIFFs format (6 months ago) <Hongquan Li>
+     * 5fc75ae Add integration tests with synthetic tile data (6 months ago) <Hongquan Li>
+     * c308b78 Add comprehensive test suite (6 months ago) <Hongquan Li>
+     * 05af157 Remove ruff from CI and pre-commit (black only for now) (6 months ago) <Hongquan Li>
+     * 3560a94 Add pre-commit hooks and run black formatter (6 months ago) <Hongquan Li>
+     * 3170c29 Improve Napari auto-contrast for fluorescence microscopy (6 months ago) <Hongquan Li>
+     * 6864704 Reorganize into proper Python package structure (6 months ago) <Hongquan Li>
+     * e1802f5 Fix Napari viewer to use tensorstore for Zarr v3 (6 months ago) <Hongquan Li>
+     * 14c6685 Add Squid to Zarr conversion script (6 months ago) <Hongquan Li>
+     * 2f70811 Add Zarr format support for tile input (6 months ago) <Hongquan Li>
+     * 6032cc8 Fix redundant tile reads in direct mode disk-write path (6 months ago) <Hongquan Li>
+     * 82bb39c Reduce redundant tile reads in fusion (1.2x speedup) (6 months ago) <Hongquan Li>
+     * 90dabd5 Fix sequential I/O to run in parallel (6 months ago) <Hongquan Li>
+     * 0733aec Add batched registration with RAM-based sizing (6 months ago) <Hongquan Li>
+     * 32787b2 Simplify parallel registration worker (6 months ago) <Hongquan Li>
+     * a19ecd9 Add parallel registration for 2.3x speedup (6 months ago) <Hongquan Li>
+     * 8b4d3e8 Move Preview section above Settings in GUI (6 months ago) <Hongquan Li>
+     * 243fff4 Add direct placement fusion mode for ~2x faster stitching (6 months ago) <Hongquan Li>
+     * ea57153 Optimize chunked fusion block size for better performance (6 months ago) <Hongquan Li>
+     * 6958207 Add memory-efficient chunked fusion mode (6 months ago) <Hongquan Li>
+     * 6d3c60f Add black formatting and pyproject.toml (6 months ago) <Hongquan Li>
+     * 27eeda1 Fix multi-channel SQUID support and napari display (6 months ago) <Hongquan Li>
+     * 68242a2 Add SQUID folder format support (6 months ago) <Hongquan Li>
+     * d3b29d3 Add preview feature and optimize registration (6 months ago) <Hongquan Li>
+     * 01ecac0 Add PyQt5 GUI for tile stitching (6 months ago) <Hongquan Li>
+     * 55e468c Fix Y-axis orientation: flip tiles when reading OME-TIFF (6 months ago) <Hongquan Li>
+     * cf3f23e Adapt tilefusion for 2D OME-TIFF microscopy data (6 months ago) <Hongquan Li>
+     * 935189d Add original tilefusion.py from QI2lab/opm-processing-v2 (6 months ago) <Hongquan Li>
+     * 3d18147 Initial commit (6 months ago) <hongquanli>

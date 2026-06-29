@@ -325,6 +325,7 @@ def fuse_plane(
     time_idx: int = 0,
     show_progress: bool = False,
     get_field: Callable = None,
+    progress_callback: Callable = None,
 ) -> None:
     """Fuse one z/t plane block-by-block at fixed low memory.
 
@@ -385,6 +386,12 @@ def fuse_plane(
             weight_sum = weight_buf[:, :bh, :bw]
             fused_block[...] = 0.0
             weight_sum[...] = 0.0
+
+            # Platform-independent progress for GUIs: an explicit callback per block,
+            # rather than scraping tqdm's terminal output (whose live updates depend on
+            # TTY detection + stream buffering that differ across OSes).
+            if progress_callback is not None:
+                progress_callback(block_idx, total_blocks)
 
             desc = f"block {block_idx}/{total_blocks}"
             iterator = (

@@ -13,11 +13,67 @@ classic-TIFF ceiling.
 """
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import tifffile
 
 logger = logging.getLogger(__name__)
+
+
+class _TensorStoreArray:
+    """Minimal ndarray-like adapter over a tensorstore so the exporter can slice it
+    lazily (reads only the requested block into memory)."""
+
+    def __init__(self, store):
+        self._ts = store
+        self.shape = tuple(int(s) for s in store.shape)
+        try:
+            self.dtype = np.dtype(store.dtype.numpy_dtype)
+        except Exception:
+            self.dtype = np.dtype("uint16")
+
+    def __getitem__(self, idx):
+        return np.asarray(self._ts[idx].read().result())
+
+
+def export_zarr_to_ome_tiff(zarr_dir, pixel_size_um=None, channel_names=None,
+                            tif_path=None):
+    """Build a Squid-style OME-TIFF from an already-written fused Zarr tree, on demand.
+
+    Re-opens the full-res scale0 array from disk (so it is correct even after the
+    multiscale pyramid step) and streams it to a tiled BigTIFF. This is the on-demand
+    path behind the GUI's "Export OME-TIFF" button -- export is not automatic.
+
+    pixel_size_um defaults to the value recorded in the NGFF metadata (the scale0
+    coordinate-transformation), so PhysicalSize is correct without the caller threading
+    it through; pass a (y, x) tuple to override.
+    """
+    import json
+    import tensorstore as ts
+
+    zarr_dir = Path(zarr_dir)
+    if pixel_size_um is None:
+        pixel_size_um = (1.0, 1.0)
+        try:
+            meta = json.loads((zarr_dir / "zarr.json").read_text())
+            scale = (meta["attributes"]["ome"]["multiscales"][0]["datasets"][0]
+                     ["coordinateTransformations"][0]["scale"])
+            pixel_size_um = (float(scale[-2]), float(scale[-1]))  # (y, x) of t,c,z,y,x
+        except Exception:
+            logger.debug("export_zarr_to_ome_tiff: could not read pixel size from NGFF; using 1.0")
+
+    arr_path = zarr_dir / "scale0" / "image"
+    store = ts.open(
+        {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(arr_path)}}
+    ).result()
+    if tif_path is None:
+        z = str(zarr_dir)
+        base = z[: -len(".ome.zarr")] if z.endswith(".ome.zarr") else z
+        tif_path = base + ".ome.tif"
+    write_ome_tiff(_TensorStoreArray(store), tif_path,
+                   pixel_size_um=pixel_size_um, channel_names=channel_names)
+    return tif_path
 
 _UM = "µm"  # OME unit string Squid uses for PhysicalSize*Unit
 

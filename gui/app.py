@@ -503,7 +503,6 @@ def _run_fusion_pipeline(
     mode_label = "direct placement" if fusion_mode == "direct" else "blended"
     log(f"Fusing tiles ({mode_label})...")
     tf._fuse_tiles(mode=fusion_mode)
-    tf._export_ome_tiff()  # OME-TIFF sibling, while fused_ts is still full-res scale0
     fuse_time = time.time() - step_start
     log(f"Tiles fused [{fuse_time:.1f}s]")
 
@@ -779,7 +778,6 @@ class FusionWorker(QThread):
                 self.progress.emit(f"Fusing tiles ({mode_label})...")
                 with self._tqdm_context():
                     tf._fuse_tiles(mode=self.fusion_mode)
-                tf._export_ome_tiff()  # OME-TIFF sibling (full-res scale0)
                 fuse_time = time.time() - step_start
                 self.progress.emit(f"Tiles fused [{fuse_time:.1f}s]")
 
@@ -1157,6 +1155,34 @@ class FlatfieldWorker(QThread):
             self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
 
 
+class OmeTiffExportWorker(QThread):
+    """Worker thread for the on-demand OME-TIFF export (off the GUI thread).
+
+    Streams the already-written fused OME-Zarr to a Squid-style tiled BigTIFF;
+    pixel size is read from the NGFF metadata inside the export function."""
+
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(str)  # tif path
+    error = pyqtSignal(str)
+
+    def __init__(self, zarr_dir, channel_names=None):
+        super().__init__()
+        self.zarr_dir = str(zarr_dir)
+        self.channel_names = channel_names
+
+    def run(self):
+        try:
+            from tilefusion.ome_tiff_export import export_zarr_to_ome_tiff
+
+            self.progress.emit(f"Exporting OME-TIFF from {self.zarr_dir} ...")
+            tif_path = export_zarr_to_ome_tiff(
+                self.zarr_dir, channel_names=self.channel_names
+            )
+            self.finished.emit(str(tif_path))
+        except Exception as e:
+            self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
+
+
 class StitcherGUI(QMainWindow):
     """Main GUI window for the stitcher."""
 
@@ -1531,6 +1557,16 @@ class StitcherGUI(QMainWindow):
         self.mip_button.clicked.connect(self.compute_mip)
         self.mip_button.setEnabled(False)
         actions_layout.addWidget(self.mip_button)
+
+        # Export the fused Zarr to a Squid-style OME-TIFF, on demand (not automatic).
+        self.export_ometiff_button = QPushButton("Export OME-TIFF")
+        self.export_ometiff_button.setCursor(Qt.PointingHandCursor)
+        self.export_ometiff_button.setToolTip(
+            "Write a Squid-style OME-TIFF (tiled BigTIFF) from the fused OME-Zarr result."
+        )
+        self.export_ometiff_button.clicked.connect(self.export_ome_tiff)
+        self.export_ometiff_button.setEnabled(False)
+        actions_layout.addWidget(self.export_ometiff_button)
 
         self.open_existing_button = QPushButton("Open Existing")
         self.open_existing_button.setCursor(Qt.PointingHandCursor)
@@ -2149,6 +2185,7 @@ class StitcherGUI(QMainWindow):
         self.batch_paths = []
         self.run_button.setEnabled(True)
         self.napari_button.setEnabled(True)
+        self.export_ometiff_button.setEnabled(True)
         self._update_batch_mode_ui()
 
         minutes = int(total_time // 60)
@@ -2165,6 +2202,7 @@ class StitcherGUI(QMainWindow):
         self.run_button.setEnabled(True)
         self.napari_button.setEnabled(True)
         self.mip_button.setEnabled(True)
+        self.export_ometiff_button.setEnabled(True)
 
         # Check if this is a multi-region output folder
         output_dir = Path(output_path)
@@ -2349,6 +2387,37 @@ class StitcherGUI(QMainWindow):
         except Exception as e:
             self.log(f"Error opening Napari: {e}\n{traceback.format_exc()}")
 
+    def export_ome_tiff(self):
+        """Build a Squid-style OME-TIFF from the fused OME-Zarr, on demand."""
+        if not self.output_path:
+            return
+
+        # Resolve the single zarr dir to export (mirrors open_in_napari's logic).
+        if self.is_multi_region and self.regions:
+            selected_region = self.region_combo.currentText()
+            zarr_path = Path(self.output_path) / f"{selected_region}.ome.zarr"
+        else:
+            zarr_path = Path(self.output_path)
+
+        if not (zarr_path / "scale0" / "image").exists():
+            self.log(f"No fused image data found at {zarr_path}; cannot export OME-TIFF.")
+            return
+
+        self.export_ometiff_button.setEnabled(False)
+        self.ometiff_worker = OmeTiffExportWorker(zarr_path, self._fused_channel_names())
+        self.ometiff_worker.progress.connect(self.log)
+        self.ometiff_worker.finished.connect(self._on_ome_tiff_exported)
+        self.ometiff_worker.error.connect(self._on_ome_tiff_error)
+        self.ometiff_worker.start()
+
+    def _on_ome_tiff_exported(self, tif_path):
+        self.export_ometiff_button.setEnabled(True)
+        self.log(f"OME-TIFF written: {tif_path}")
+
+    def _on_ome_tiff_error(self, error_msg):
+        self.export_ometiff_button.setEnabled(True)
+        self.log(f"\nOME-TIFF export error: {error_msg}")
+
     def compute_mip(self):
         """Compute and display max intensity projection in Napari."""
         if not self.output_path:
@@ -2440,6 +2509,7 @@ class StitcherGUI(QMainWindow):
 
         self.napari_button.setEnabled(True)
         self.mip_button.setEnabled(True)
+        self.export_ometiff_button.setEnabled(True)
         self.log(f"Loaded: {folder}")
         if self.is_multi_region:
             self.log(f"Regions: {', '.join(self.regions)}")

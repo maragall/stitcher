@@ -1,9 +1,11 @@
 """Tests for the streaming OME-TIFF export (tilefusion.ome_tiff_export)."""
 
+import json
+
 import numpy as np
 import tifffile
 
-from tilefusion.ome_tiff_export import write_ome_tiff
+from tilefusion.ome_tiff_export import export_zarr_to_ome_tiff, write_ome_tiff
 
 
 def test_roundtrip_cyx_with_edge_padding(tmp_path):
@@ -41,3 +43,49 @@ def test_2d_and_5d_shapes(tmp_path):
         assert np.array_equal(data, a5.transpose(0, 2, 1, 3, 4))   # TCZYX -> TZCYX
         assert 'PhysicalSizeZ="2.0"' in tf.ome_metadata
         assert tf.series[0].axes.replace("Q", "") in ("TZCYX", "ZCYX", "CYX")
+
+
+def test_export_zarr_to_ome_tiff_reads_pixel_size_from_ngff(tmp_path):
+    """The button path: open scale0/image and pick PhysicalSize up from the NGFF
+    metadata, so the caller doesn't have to thread pixel size through."""
+    import tensorstore as ts
+
+    zdir = tmp_path / "m.ome.zarr"
+    arr_path = zdir / "scale0" / "image"
+    C, Y, X = 2, 400, 300
+    data = (np.random.default_rng(3).random((1, C, 1, Y, X)) * 1000).astype(np.uint16)
+    store = ts.open(
+        {
+            "driver": "zarr3",
+            "kvstore": {"driver": "file", "path": str(arr_path)},
+            "metadata": {
+                "shape": [1, C, 1, Y, X],
+                "data_type": "uint16",
+                "chunk_grid": {"name": "regular",
+                               "configuration": {"chunk_shape": [1, 1, 1, 256, 256]}},
+            },
+            "create": True,
+        }
+    ).result()
+    store.write(data).result()
+
+    # NGFF group metadata carrying the pixel size in the scale0 transform.
+    (zdir / "zarr.json").write_text(json.dumps({
+        "attributes": {"ome": {"version": "0.5", "multiscales": [{
+            "axes": [{"name": a, "type": t} for a, t in
+                     [("t", "time"), ("c", "channel"), ("z", "space"),
+                      ("y", "space"), ("x", "space")]],
+            "datasets": [{"path": "scale0/image", "coordinateTransformations": [
+                {"type": "scale", "scale": [1.0, 1.0, 1.0, 0.65, 0.65]}]}],
+            "name": "image",
+        }]}},
+        "zarr_format": 3,
+        "node_type": "group",
+    }))
+
+    tif = export_zarr_to_ome_tiff(str(zdir), channel_names=["DAPI", "488"])
+    assert tif.endswith(".ome.tif")
+    with tifffile.TiffFile(tif) as tf:
+        xml = tf.ome_metadata
+    assert 'PhysicalSizeX="0.65"' in xml and 'PhysicalSizeY="0.65"' in xml
+    assert "DAPI" in xml

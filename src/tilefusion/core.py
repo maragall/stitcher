@@ -54,22 +54,6 @@ from .io import (
 )
 
 
-class _TensorStoreArray:
-    """Minimal ndarray-like adapter over a tensorstore so the OME-TIFF exporter can
-    slice it lazily (reads only the requested block into memory)."""
-
-    def __init__(self, ts):
-        self._ts = ts
-        self.shape = tuple(int(s) for s in ts.shape)
-        try:
-            self.dtype = np.dtype(ts.dtype.numpy_dtype)
-        except Exception:
-            self.dtype = np.dtype("uint16")
-
-    def __getitem__(self, idx):
-        return np.asarray(self._ts[idx].read().result())
-
-
 class TileFusion:
     """
     GPU/CPU-accelerated tile registration and fusion for 2D OME-TIFF stacks.
@@ -341,8 +325,6 @@ class TileFusion:
         # worst case is the translation-only result. See tilefusion.distortion.
         self.enable_distortion_correction: bool = True
         self._tile_warper = None
-        # Always also emit a Squid-style OME-TIFF alongside the canonical Zarr tree.
-        self.write_ome_tiff: bool = True
 
     def _init_corrections(
         self, flatfield: Optional[np.ndarray], darkfield: Optional[np.ndarray]
@@ -592,28 +574,6 @@ class TileFusion:
             tile = np.broadcast_to(tile, (self.channels, tile.shape[1], tile.shape[2]))
 
         return tile
-
-    def _export_ome_tiff(self) -> None:
-        """Build a Squid-style OME-TIFF from the just-written fused Zarr tree.
-
-        The Zarr is always the canonical output; this adds an OME-TIFF sibling for
-        tools that expect Squid OME-TIFF. Streams tiles from the fused tensorstore so
-        peak memory is independent of mosaic size. Best-effort: never fail the run.
-        """
-        if not getattr(self, "write_ome_tiff", True) or self.fused_ts is None:
-            return
-        try:
-            from .ome_tiff_export import write_ome_tiff
-
-            out = str(self.output_path)
-            tif_path = (out[: -len(".ome.zarr")] if out.endswith(".ome.zarr") else out) + ".ome.tif"
-            py, px = float(self._pixel_size[0]), float(self._pixel_size[1])
-            names = getattr(self, "_channel_names", None)
-            print(f"Building OME-TIFF: {tif_path}")
-            write_ome_tiff(_TensorStoreArray(self.fused_ts), tif_path,
-                           pixel_size_um=(py, px), channel_names=names)
-        except Exception as e:
-            print(f"OME-TIFF export skipped ({e}); the Zarr tree is still written.")
 
     def _tile_field(self, tile_idx: int):
         """Per-tile elastic displacement field (2, Y, X) for the fusion sampler, or
@@ -1172,10 +1132,6 @@ class TileFusion:
 
         print("Fusing tiles...")
         self._fuse_tiles()
-
-        # Export the OME-TIFF now, while fused_ts is still the full-res scale0 (the
-        # multiscale step below can repoint it at a coarser pyramid level).
-        self._export_ome_tiff()
 
         write_scale_group_metadata(self.output_path / "scale0")
 
