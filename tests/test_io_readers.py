@@ -41,7 +41,6 @@ from tilefusion.io.zarr import (
     read_zarr_region,
 )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. ome_tiff_tiles — uses committed synth_4fov fixture
 # ─────────────────────────────────────────────────────────────────────────────
@@ -77,9 +76,18 @@ class TestOmeTiffTilesReader:
 
     def test_common_keys_present(self, meta):
         required = {
-            "n_tiles", "shape", "channels", "channel_names",
-            "n_z", "n_t", "tile_positions", "tile_identifiers",
-            "pixel_size", "axes", "ome_tiff_folder", "tile_file_map",
+            "n_tiles",
+            "shape",
+            "channels",
+            "channel_names",
+            "n_z",
+            "n_t",
+            "tile_positions",
+            "tile_identifiers",
+            "pixel_size",
+            "axes",
+            "ome_tiff_folder",
+            "tile_file_map",
         }
         assert required.issubset(meta.keys())
 
@@ -114,6 +122,7 @@ class TestOmeTiffTilesReader:
 # 2. individual_tiffs — tiny deterministic fixture
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture(scope="module")
 def individual_tiffs_folder(tmp_path_factory):
     """
@@ -127,11 +136,13 @@ def individual_tiffs_folder(tmp_path_factory):
     img_folder = tmp / "0"
     img_folder.mkdir()
 
-    coords = pd.DataFrame({
-        "fov": [0, 1, 2, 3],
-        "x (mm)": [0.0, 1.0, 0.0, 1.0],
-        "y (mm)": [0.0, 0.0, 1.0, 1.0],
-    })
+    coords = pd.DataFrame(
+        {
+            "fov": [0, 1, 2, 3],
+            "x (mm)": [0.0, 1.0, 0.0, 1.0],
+            "y (mm)": [0.0, 0.0, 1.0, 1.0],
+        }
+    )
     coords.to_csv(img_folder / "coordinates.csv", index=False)
 
     rng = np.random.default_rng(42)
@@ -177,9 +188,18 @@ class TestIndividualTiffsReader:
 
     def test_common_keys_present(self, meta):
         required = {
-            "n_tiles", "shape", "channels", "channel_names",
-            "n_z", "n_t", "tile_positions", "tile_identifiers",
-            "pixel_size", "image_folder", "time_folders", "pattern",
+            "n_tiles",
+            "shape",
+            "channels",
+            "channel_names",
+            "n_z",
+            "n_t",
+            "tile_positions",
+            "tile_identifiers",
+            "pixel_size",
+            "image_folder",
+            "time_folders",
+            "pattern",
         }
         assert required.issubset(meta.keys())
 
@@ -213,6 +233,7 @@ class TestIndividualTiffsReader:
 # 3. single OME-TIFF — tiny deterministic multi-series fixture
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture(scope="module")
 def single_ome_tiff_path(tmp_path_factory):
     """
@@ -235,7 +256,9 @@ def single_ome_tiff_path(tmp_path_factory):
                     "PhysicalSizeY": 0.5,
                     "PhysicalSizeXUnit": "um",
                     "PhysicalSizeYUnit": "um",
-                    "Plane": [{"PositionX": float((i % 2) * 50), "PositionY": float((i // 2) * 50)}],
+                    "Plane": [
+                        {"PositionX": float((i % 2) * 50), "PositionY": float((i // 2) * 50)}
+                    ],
                 },
             )
 
@@ -280,8 +303,13 @@ class TestSingleOmeTiffReader:
 
     def test_common_keys_present(self, meta):
         required = {
-            "n_tiles", "n_series", "shape", "channels",
-            "pixel_size", "tile_positions", "tiff_handle",
+            "n_tiles",
+            "n_series",
+            "shape",
+            "channels",
+            "pixel_size",
+            "tile_positions",
+            "tiff_handle",
         }
         assert required.issubset(meta.keys())
 
@@ -338,6 +366,7 @@ class TestSingleOmeTiffReader:
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. zarr — minimal zarr3 store with per_index_metadata
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture(scope="module")
 def zarr_store_path(tmp_path_factory):
@@ -429,8 +458,15 @@ class TestZarrReader:
 
     def test_common_keys_present(self, meta):
         required = {
-            "n_tiles", "n_series", "shape", "channels", "channel_names",
-            "pixel_size", "tile_positions", "is_3d", "tensorstore",
+            "n_tiles",
+            "n_series",
+            "shape",
+            "channels",
+            "channel_names",
+            "pixel_size",
+            "tile_positions",
+            "is_3d",
+            "tensorstore",
         }
         assert required.issubset(meta.keys())
 

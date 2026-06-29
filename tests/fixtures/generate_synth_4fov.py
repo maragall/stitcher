@@ -12,6 +12,7 @@ stay exact.
 The grid is inset (windows stay strictly inside the source) so no pixel is ever fabricated by
 edge handling. See docs/registration-quality-fixture-deep-dive.md.
 """
+
 import csv
 import json
 from pathlib import Path
@@ -39,11 +40,11 @@ FIXTURE_DIR = Path(__file__).parent / "synth_4fov"
 # Moderate, realistic default degradation severities — chosen so registration still recovers
 # the injected offset within tolerance, while being representative. All are parameters so a
 # later (non-gating) robustness sweep can push them harder.
-DEFOCUS_MAX = 0.6      # per-tile Gaussian blur sigma drawn from [0, this] px (focus drift)
-VIGNETTE_MAX = 0.25    # per-tile radial illumination falloff, fraction
-BG_FRAC = 0.02         # additive background, fraction of the tile median
-BLEACH = 0.03          # scan-order intensity drop: gain = 1 - BLEACH * fov_index
-READ_SIGMA = 2.0       # Gaussian read-noise std (counts); Poisson supplies shot noise
+DEFOCUS_MAX = 0.6  # per-tile Gaussian blur sigma drawn from [0, this] px (focus drift)
+VIGNETTE_MAX = 0.25  # per-tile radial illumination falloff, fraction
+BG_FRAC = 0.02  # additive background, fraction of the tile median
+BLEACH = 0.03  # scan-order intensity drop: gain = 1 - BLEACH * fov_index
+READ_SIGMA = 2.0  # Gaussian read-noise std (counts); Poisson supplies shot noise
 
 
 def backlash_offsets(b_px: float) -> np.ndarray:
@@ -68,7 +69,9 @@ def sample_tile(plane: np.ndarray, oy: float, ox: float, size: int = TILE) -> np
     xs = ox + np.arange(size)
     gy, gx = np.meshgrid(ys, xs, indexing="ij")
     coords = np.stack([gy.ravel(), gx.ravel()])
-    return map_coordinates(plane.astype(np.float64), coords, order=3, mode="reflect").reshape(size, size)
+    return map_coordinates(plane.astype(np.float64), coords, order=3, mode="reflect").reshape(
+        size, size
+    )
 
 
 def _illumination_field(shape, rng, strength) -> np.ndarray:
@@ -92,7 +95,9 @@ def degrade_tile(clean: np.ndarray, fov: int, seed: int) -> np.ndarray:
     sigma = float(rng.uniform(0.0, DEFOCUS_MAX))
     if sigma > 0:
         img = gaussian_filter(img, sigma)
-    img = img * _illumination_field(img.shape, rng, float(rng.uniform(0.5 * VIGNETTE_MAX, VIGNETTE_MAX)))
+    img = img * _illumination_field(
+        img.shape, rng, float(rng.uniform(0.5 * VIGNETTE_MAX, VIGNETTE_MAX))
+    )
     img = img * (1.0 - BLEACH * fov)
     img = img + BG_FRAC * float(np.median(clean))
     noisy = rng.poisson(np.clip(img, 0.0, None)) + rng.normal(0.0, READ_SIGMA, size=img.shape)
@@ -152,12 +157,21 @@ def generate_fixture(
 
     gt = {
         "params": {
-            "seed": seed, "sigma_px": sigma_px, "b_px": b_px, "scan": "raster",
-            "channel_idx": channel_idx, "z_level": z_level, "pixel_size_um": px_um,
-            "step_px": STEP, "overlap_px": TILE - STEP,
+            "seed": seed,
+            "sigma_px": sigma_px,
+            "b_px": b_px,
+            "scan": "raster",
+            "channel_idx": channel_idx,
+            "z_level": z_level,
+            "pixel_size_um": px_um,
+            "step_px": STEP,
+            "overlap_px": TILE - STEP,
             "degradation": {
-                "defocus_max": DEFOCUS_MAX, "vignette_max": VIGNETTE_MAX,
-                "bg_frac": BG_FRAC, "bleach": BLEACH, "read_sigma": READ_SIGMA,
+                "defocus_max": DEFOCUS_MAX,
+                "vignette_max": VIGNETTE_MAX,
+                "bg_frac": BG_FRAC,
+                "bleach": BLEACH,
+                "read_sigma": READ_SIGMA,
             },
         },
         # geometry is ground truth; degradations do not move pixels, so offset/error are exact.

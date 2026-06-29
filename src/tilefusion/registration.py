@@ -70,7 +70,11 @@ def register_pair_worker(args: Tuple) -> Tuple:
         if abs(dy_s) > max_shift[0] or abs(dx_s) > max_shift[1]:
             logger.debug(
                 "Pair (%d, %d): shift (%.2f, %.2f) exceeds max_shift %s — rejected",
-                i_pos, j_pos, dy_s, dx_s, max_shift,
+                i_pos,
+                j_pos,
+                dy_s,
+                dx_s,
+                max_shift,
             )
             return (i_pos, j_pos, None, None, None)
 
@@ -136,8 +140,7 @@ def register_and_score(
     # lock is heavily down-weighted rather than hard-zeroed.
     a = to_numpy(arr1)
     b = to_numpy(g2s)
-    mgn = max(1, min(min(a.shape) // 4,
-                     int(np.ceil(abs(out_shift[0]) + abs(out_shift[1]))) + 3))
+    mgn = max(1, min(min(a.shape) // 4, int(np.ceil(abs(out_shift[0]) + abs(out_shift[1]))) + 3))
     if a.shape[0] > 2 * mgn and a.shape[1] > 2 * mgn:
         av = a[mgn:-mgn, mgn:-mgn].ravel()
         bv = b[mgn:-mgn, mgn:-mgn].ravel()
@@ -296,9 +299,7 @@ def register_pairs_batched(
             patches = list(io_executor.map(read_pair_patches, batch))
 
         work_items = [
-            (i, j, pi, pj, df, sw, max_shift)
-            for i, j, pi, pj in patches
-            if pi is not None
+            (i, j, pi, pj, df, sw, max_shift) for i, j, pi, pj in patches if pi is not None
         ]
 
         desc = f"register {batch_idx+1}/{n_batches}"

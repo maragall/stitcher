@@ -70,7 +70,9 @@ def _check_connectivity(edges: List[Dict[str, Any]], n_tiles: int) -> List[List[
     return list(components.values())
 
 
-def solve_least_squares(edges: List[Dict[str, Any]], n_tiles: int, fixed_indices: List[int]) -> np.ndarray:
+def solve_least_squares(
+    edges: List[Dict[str, Any]], n_tiles: int, fixed_indices: List[int]
+) -> np.ndarray:
     """
     Solve a linear least-squares for all 2 axes at once,
     given weighted pairwise edges and fixed tile indices.
@@ -92,13 +94,17 @@ def solve_least_squares(edges: List[Dict[str, Any]], n_tiles: int, fixed_indices
     # Drop any edge with a non-finite weight or shift before building the system: a
     # single NaN/inf (e.g. a degenerate registration) poisons the whole solve and is
     # the usual cause of "SVD did not converge". Connectivity is re-checked by callers.
-    clean = [e for e in edges
-             if np.isfinite(e["w"]) and np.all(np.isfinite(np.asarray(e["t"], float)))]
+    clean = [
+        e for e in edges if np.isfinite(e["w"]) and np.all(np.isfinite(np.asarray(e["t"], float)))
+    ]
     if len(clean) != len(edges):
         # debug, not warning: this runs once per iterative-rejection round, so warning
         # would flood; the drop is expected and handled.
-        logger.debug("solve_least_squares: dropped %d/%d edges with non-finite "
-                     "weight/shift", len(edges) - len(clean), len(edges))
+        logger.debug(
+            "solve_least_squares: dropped %d/%d edges with non-finite " "weight/shift",
+            len(edges) - len(clean),
+            len(edges),
+        )
     edges = clean
 
     shifts = np.zeros((n_tiles, 2), dtype=np.float64)
@@ -135,11 +141,12 @@ def _solve_axis(A: np.ndarray, b: np.ndarray, n_tiles: int) -> np.ndarray:
         sol, *_ = np.linalg.lstsq(A, b, rcond=None)
         if np.all(np.isfinite(sol)):
             return sol
-        logger.warning("solve_least_squares: lstsq returned non-finite solution; "
-                       "using ridge normal equations")
+        logger.warning(
+            "solve_least_squares: lstsq returned non-finite solution; "
+            "using ridge normal equations"
+        )
     except np.linalg.LinAlgError as e:
-        logger.warning("solve_least_squares: lstsq failed (%s); using ridge normal "
-                       "equations", e)
+        logger.warning("solve_least_squares: lstsq failed (%s); using ridge normal " "equations", e)
     AtA = A.T @ A
     ridge = 1e-9 * (np.trace(AtA) / max(n_tiles, 1) + 1.0)
     AtA[np.diag_indices_from(AtA)] += ridge
@@ -240,7 +247,9 @@ def two_round_optimization(
         sizes = sorted((len(c) for c in components), reverse=True)
         logger.warning(
             "Tile graph has %d disconnected components (%d tiles not connected to "
-            "the anchor; placed by the affine fallback).", len(components), sum(sizes[1:]),
+            "the anchor; placed by the affine fallback).",
+            len(components),
+            sum(sizes[1:]),
         )
         print(
             f"WARNING: {len(components)} disconnected tile groups detected "
@@ -269,7 +278,7 @@ def two_round_optimization(
         base_n = _num_components(work, n_tiles)
         removed = False
         for k in candidates:  # worst first; skip any whose removal would strand a tile
-            trial = work[:k] + work[k + 1:]
+            trial = work[:k] + work[k + 1 :]
             if _num_components(trial, n_tiles) <= base_n:
                 work.pop(k)  # redundant (loop) edge -- safe to drop
                 removed = True
@@ -357,14 +366,21 @@ def fit_stage_to_image_transform(pairwise_metrics, tile_positions, pixel_size):
         measured = stage_disp / ps + np.array([dy, dx], dtype=np.float64)
         # Skip non-finite rows (zero/NaN pixel size, NaN registration score/shift); a
         # single one makes LAPACK reject the whole lstsq ("DLASCL illegal value").
-        if not (np.all(np.isfinite(stage_disp)) and np.all(np.isfinite(measured))
-                and np.isfinite(score)):
+        if not (
+            np.all(np.isfinite(stage_disp)) and np.all(np.isfinite(measured)) and np.isfinite(score)
+        ):
             continue
         S.append(stage_disp)
         P.append(measured)
         W.append(np.sqrt(max(float(score), 1e-6)))
-    identity = {"M": np.eye(2), "scale": 1.0, "rotation_deg": 0.0, "anisotropy": 1.0,
-                "residual_rms": float("nan"), "n_pairs": len(S)}
+    identity = {
+        "M": np.eye(2),
+        "scale": 1.0,
+        "rotation_deg": 0.0,
+        "anisotropy": 1.0,
+        "residual_rms": float("nan"),
+        "n_pairs": len(S),
+    }
     if len(S) < 2:
         # Too few usable pairs to fit. Return an identity stage->image map rather than
         # raising: the only caller places DISCONNECTED tiles with this, and a sparse or
@@ -391,6 +407,6 @@ def fit_stage_to_image_transform(pairwise_metrics, tile_positions, pixel_size):
         "scale": float(sv.mean()),
         "rotation_deg": float(np.degrees(np.arctan2(R[1, 0], R[0, 0]))),
         "anisotropy": float(sv[0] / sv[1]),
-        "residual_rms": float(np.sqrt((resid ** 2).sum(axis=1)).mean()),
+        "residual_rms": float(np.sqrt((resid**2).sum(axis=1)).mean()),
         "n_pairs": len(S),
     }

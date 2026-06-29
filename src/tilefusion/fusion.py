@@ -345,9 +345,7 @@ def fuse_plane(
     floor_origins = [(int(np.floor(oy)), int(np.floor(ox))) for (oy, ox) in origins]
     fracs = [(oy - foy, ox - fox) for (oy, ox), (foy, fox) in zip(origins, floor_origins)]
 
-    tile_bounds = [
-        (foy, foy + Y, fox, fox + X) for (foy, fox) in floor_origins
-    ]
+    tile_bounds = [(foy, foy + Y, fox, fox + X) for (foy, fox) in floor_origins]
 
     n_blocks_y = (pad_Y + block_size - 1) // block_size
     n_blocks_x = (pad_X + block_size - 1) // block_size
@@ -394,9 +392,7 @@ def fuse_plane(
                 progress_callback(block_idx, total_blocks)
 
             desc = f"block {block_idx}/{total_blocks}"
-            iterator = (
-                tqdm(overlapping, desc=desc, leave=False) if show_progress else overlapping
-            )
+            iterator = tqdm(overlapping, desc=desc, leave=False) if show_progress else overlapping
             for t_idx in iterator:
                 tile_all = read_tile(t_idx, z_level, time_idx)
 
@@ -431,8 +427,20 @@ def fuse_plane(
                     # same bilinear sample as the sub-pixel shift (one resample, no
                     # separate warp pass). field is (2, tY, tX) float32 (dy, dx).
                     accumulate_tile_shard_distorted(
-                        fused_block, weight_sum, tile_all, w2d, oy0, ox0,
-                        sy0, sx0, sy1 - sy0, sx1 - sx0, fy, fx, field[0], field[1],
+                        fused_block,
+                        weight_sum,
+                        tile_all,
+                        w2d,
+                        oy0,
+                        ox0,
+                        sy0,
+                        sx0,
+                        sy1 - sy0,
+                        sx1 - sx0,
+                        fy,
+                        fx,
+                        field[0],
+                        field[1],
                     )
                 elif fy == 0.0 and fx == 0.0:
                     accumulate_tile_shard(
@@ -440,8 +448,18 @@ def fuse_plane(
                     )
                 else:
                     accumulate_tile_shard_shifted(
-                        fused_block, weight_sum, tile_all, w2d, oy0, ox0,
-                        sy0, sx0, sy1 - sy0, sx1 - sx0, fy, fx,
+                        fused_block,
+                        weight_sum,
+                        tile_all,
+                        w2d,
+                        oy0,
+                        ox0,
+                        sy0,
+                        sx0,
+                        sy1 - sy0,
+                        sx1 - sx0,
+                        fy,
+                        fx,
                     )
 
             # One blend, shared with _fuse_tiles_full_plane: normalize in place,

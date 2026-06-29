@@ -78,7 +78,7 @@ def _loocv_order(pos: np.ndarray, s: np.ndarray, max_deg: int):
     n = len(pos)
     best = None
     for d in range(1, max_deg + 1):
-        if n < d + 3:                       # need enough points to fit AND hold one out
+        if n < d + 3:  # need enough points to fit AND hold one out
             continue
         errs = []
         for k in range(n):
@@ -104,13 +104,17 @@ def _block_shifts(strip_i: np.ndarray, strip_j: np.ndarray, n_blocks: int, ncc_m
     pos, sy, sx = [], [], []
     for k in range(n_blocks):
         if longx:
-            a = strip_i[:, k * B:(k + 1) * B]; b = strip_j[:, k * B:(k + 1) * B]
+            a = strip_i[:, k * B : (k + 1) * B]
+            b = strip_j[:, k * B : (k + 1) * B]
         else:
-            a = strip_i[k * B:(k + 1) * B, :]; b = strip_j[k * B:(k + 1) * B, :]
+            a = strip_i[k * B : (k + 1) * B, :]
+            b = strip_j[k * B : (k + 1) * B, :]
         if a.size < _MIN_BLOCK_PX or a.std() < _MIN_STD or b.std() < _MIN_STD:
             continue
         try:
-            sh, _, _ = phase_cross_correlation(a, b, upsample_factor=_UPSAMPLE, normalization="phase")
+            sh, _, _ = phase_cross_correlation(
+                a, b, upsample_factor=_UPSAMPLE, normalization="phase"
+            )
         except Exception as e:
             logger.debug("distortion: block %d phase-corr failed: %s", k, e)
             continue
@@ -118,13 +122,16 @@ def _block_shifts(strip_i: np.ndarray, strip_j: np.ndarray, n_blocks: int, ncc_m
         m = _NCC_EDGE_MARGIN
         if min(a.shape) <= 2 * m:
             continue
-        av = a[m:-m, m:-m].ravel(); bv = bb[m:-m, m:-m].ravel()
-        if av.std() < 1e-6 or bv.std() < 1e-6:        # 1e-6 = divide-by-zero guard for corrcoef
+        av = a[m:-m, m:-m].ravel()
+        bv = bb[m:-m, m:-m].ravel()
+        if av.std() < 1e-6 or bv.std() < 1e-6:  # 1e-6 = divide-by-zero guard for corrcoef
             continue
         corr = np.corrcoef(av, bv)[0, 1]
-        if not (corr >= ncc_min):                     # NaN-safe: a NaN correlation is rejected
+        if not (corr >= ncc_min):  # NaN-safe: a NaN correlation is rejected
             continue
-        pos.append(k * B + B / 2.0); sy.append(float(sh[0])); sx.append(float(sh[1]))
+        pos.append(k * B + B / 2.0)
+        sy.append(float(sh[0]))
+        sx.append(float(sh[1]))
     if len(pos) < _MIN_BLOCKS:
         return None
     return np.array(pos), np.array(sy), np.array(sx)
@@ -145,7 +152,10 @@ def _fit_seam(tf, i, j, ps, pos, Y, X, n_blocks, ncc_min):
         if vert:
             if not (0 < dy < Y):
                 return None
-            od = Y - dy; ow = X - abs(dx); xa = max(dx, 0); xb = max(-dx, 0)
+            od = Y - dy
+            ow = X - abs(dx)
+            xa = max(dx, 0)
+            xb = max(-dx, 0)
             if ow < n_blocks * _MIN_BLOCK_WIDTH:
                 return None
             si = np.asarray(tf._read_tile_region(i, slice(dy, Y), slice(xa, xa + ow)))
@@ -153,7 +163,10 @@ def _fit_seam(tf, i, j, ps, pos, Y, X, n_blocks, ncc_min):
         else:
             if not (0 < dx < X):
                 return None
-            od = X - dx; oh = Y - abs(dy); ya = max(dy, 0); yb = max(-dy, 0)
+            od = X - dx
+            oh = Y - abs(dy)
+            ya = max(dy, 0)
+            yb = max(-dy, 0)
             if oh < n_blocks * _MIN_BLOCK_WIDTH:
                 return None
             si = np.asarray(tf._read_tile_region(i, slice(ya, ya + oh), slice(dx, X)))
@@ -162,9 +175,12 @@ def _fit_seam(tf, i, j, ps, pos, Y, X, n_blocks, ncc_min):
             si = si[0]
         while sj.ndim > 2:
             sj = sj[0]
-        si = si.astype(np.float32); sj = sj.astype(np.float32)
-        mh = min(si.shape[0], sj.shape[0]); mw = min(si.shape[1], sj.shape[1])
-        si = si[:mh, :mw]; sj = sj[:mh, :mw]
+        si = si.astype(np.float32)
+        sj = sj.astype(np.float32)
+        mh = min(si.shape[0], sj.shape[0])
+        mw = min(si.shape[1], sj.shape[1])
+        si = si[:mh, :mw]
+        sj = sj[:mh, :mw]
         bs = _block_shifts(si, sj, n_blocks, ncc_min)
         if bs is None:
             return None
@@ -173,11 +189,20 @@ def _fit_seam(tf, i, j, ps, pos, Y, X, n_blocks, ncc_min):
         bx = _loocv_order(ppos, sX, _MAX_DEG)
         if by is None or bx is None:
             return None
-        cy = np.polyfit(ppos, sY, by[0]); cx = np.polyfit(ppos, sX, bx[0])
+        cy = np.polyfit(ppos, sY, by[0])
+        cx = np.polyfit(ppos, sX, bx[0])
         # pmin/pmax bound the along-seam range the fit was sampled over; materialize_field
         # clamps to it so a cubic is never extrapolated across the un-sampled tile width.
-        base = {"vert": vert, "od": float(od), "dy": dy, "dx": dx, "cy": cy, "cx": cx,
-                "pmin": float(ppos.min()), "pmax": float(ppos.max())}
+        base = {
+            "vert": vert,
+            "od": float(od),
+            "dy": dy,
+            "dx": dx,
+            "cy": cy,
+            "cx": cx,
+            "pmin": float(ppos.min()),
+            "pmax": float(ppos.max()),
+        }
         return (by[0], bx[0], base)
     except Exception as e:
         logger.debug("distortion: seam (%d,%d) skipped: %s", i, j, e)
@@ -202,10 +227,12 @@ def build_seam_corrections(tf, n_blocks=_N_BLOCKS, ncc_min=_NCC_MIN):
     # (numpy linalg). Pin BLAS to 1 thread per worker so W workers don't each spawn a
     # full BLAS pool and oversubscribe the CPU.
     with limit_blas_threads(1), ThreadPoolExecutor(max_workers=workers) as ex:
-        fits = list(ex.map(
-            lambda p: (p, _fit_seam(tf, p[0], p[1], ps, pos, Y, X, n_blocks, ncc_min)),
-            pairs,
-        ))
+        fits = list(
+            ex.map(
+                lambda p: (p, _fit_seam(tf, p[0], p[1], ps, pos, Y, X, n_blocks, ncc_min)),
+                pairs,
+            )
+        )
     corr = {}
     n_fit = 0
     for (i, j), res in fits:
@@ -215,8 +242,10 @@ def build_seam_corrections(tf, n_blocks=_N_BLOCKS, ncc_min=_NCC_MIN):
         corr.setdefault(i, []).append({**base, "sign": +0.5, "side": "i"})
         corr.setdefault(j, []).append({**base, "sign": -0.5, "side": "j"})
         n_fit += 1
-    print(f"Distortion correction: fit {n_fit} seams; {len(corr)} tiles get a field "
-          f"(others identity).")
+    print(
+        f"Distortion correction: fit {n_fit} seams; {len(corr)} tiles get a field "
+        f"(others identity)."
+    )
     return corr
 
 
@@ -227,19 +256,22 @@ def materialize_field(corrs, Y, X):
     cols = np.arange(X, dtype=np.float32)
     rows = np.arange(Y, dtype=np.float32)
     for c in corrs:
-        od = c["od"]; sgn = c["sign"]
+        od = c["od"]
+        sgn = c["sign"]
         # Clamp the along-seam eval coordinate to the sampled range so the polynomial is
         # held constant (not extrapolated) over the un-sampled strip edges. pmin/pmax are
         # absent only for hand-built test dicts -> no clamp there.
-        pmin = c.get("pmin"); pmax = c.get("pmax")
+        pmin = c.get("pmin")
+        pmax = c.get("pmax")
         if c["vert"]:
             xoff = max(c["dx"], 0) if c["side"] == "i" else max(-c["dx"], 0)
             p = cols - xoff
             if pmin is not None:
                 p = np.clip(p, pmin, pmax)
-            sY = np.polyval(c["cy"], p); sX = np.polyval(c["cx"], p)        # (X,)
+            sY = np.polyval(c["cy"], p)
+            sX = np.polyval(c["cx"], p)  # (X,)
             if c["side"] == "i":
-                f = np.clip((rows - c["dy"]) / (od / 2.0), 0, 1)            # (Y,)
+                f = np.clip((rows - c["dy"]) / (od / 2.0), 0, 1)  # (Y,)
             else:
                 f = np.clip((od - rows) / (od / 2.0), 0, 1)
             D[0] += (sgn * sY)[None, :] * f[:, None]
@@ -249,9 +281,10 @@ def materialize_field(corrs, Y, X):
             p = rows - yoff
             if pmin is not None:
                 p = np.clip(p, pmin, pmax)
-            sY = np.polyval(c["cy"], p); sX = np.polyval(c["cx"], p)        # (Y,)
+            sY = np.polyval(c["cy"], p)
+            sX = np.polyval(c["cx"], p)  # (Y,)
             if c["side"] == "i":
-                f = np.clip((cols - c["dx"]) / (od / 2.0), 0, 1)           # (X,)
+                f = np.clip((cols - c["dx"]) / (od / 2.0), 0, 1)  # (X,)
             else:
                 f = np.clip((od - cols) / (od / 2.0), 0, 1)
             D[0] += (sgn * sY)[:, None] * f[None, :]

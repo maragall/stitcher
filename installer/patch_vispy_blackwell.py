@@ -153,19 +153,23 @@ def set_env_var():
     if sys.platform == "win32":
         try:
             import winreg
+
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_SET_VALUE)
             winreg.SetValueEx(key, "VISPY_USE_LEGACY_QGLWIDGET", 0, winreg.REG_SZ, "1")
             winreg.CloseKey(key)
             # Broadcast change
             import ctypes
-            ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 2, 5000, ctypes.byref(ctypes.c_long()))
+
+            ctypes.windll.user32.SendMessageTimeoutW(
+                0xFFFF, 0x001A, 0, "Environment", 2, 5000, ctypes.byref(ctypes.c_long())
+            )
             print("Set VISPY_USE_LEGACY_QGLWIDGET=1 in Windows user environment.")
         except Exception as e:
             print(f"Could not set env var automatically: {e}")
             print("Manually set VISPY_USE_LEGACY_QGLWIDGET=1 in your environment.")
     else:
         shell_rc = os.path.expanduser("~/.bashrc")
-        line = 'export VISPY_USE_LEGACY_QGLWIDGET=1'
+        line = "export VISPY_USE_LEGACY_QGLWIDGET=1"
         try:
             with open(shell_rc, "r") as f:
                 if PATCH_MARKER in f.read():
@@ -185,7 +189,9 @@ def check_needs_patch():
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         gpu_info = result.stdout.strip()
         print(f"GPU: {gpu_info}")
@@ -207,7 +213,9 @@ def check_needs_patch():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Patch VisPy for NVIDIA Blackwell GPU compatibility")
+    parser = argparse.ArgumentParser(
+        description="Patch VisPy for NVIDIA Blackwell GPU compatibility"
+    )
     parser.add_argument("--check", action="store_true", help="Check if patch is needed")
     parser.add_argument("--revert", action="store_true", help="Revert the patch")
     args = parser.parse_args()

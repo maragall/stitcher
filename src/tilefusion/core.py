@@ -137,9 +137,7 @@ class TileFusion:
         self._init_handle_storage()
         self._resolve_registration_channel()
 
-    def _resolve_paths(
-        self, tiff_path: Union[str, Path], output_path: Union[str, Path]
-    ) -> None:
+    def _resolve_paths(self, tiff_path: Union[str, Path], output_path: Union[str, Path]) -> None:
         """Resolve the input path (must exist) and the fused-output path."""
         self.tiff_path = Path(tiff_path)
         if not self.tiff_path.exists():
@@ -196,9 +194,7 @@ class TileFusion:
             self._metadata["tile_identifiers"] = filtered_identifiers
             self._metadata["n_tiles"] = self.n_tiles
 
-    def _configure_z_t_planes(
-        self, registration_z: Optional[int], registration_t: int
-    ) -> None:
+    def _configure_z_t_planes(self, registration_z: Optional[int], registration_t: int) -> None:
         """Set z/t plane counts and validate the registration z/t selection."""
         # Z-stack and time series properties
         self.n_z = self._metadata.get("n_z", 1)
@@ -736,12 +732,21 @@ class TileFusion:
 
         if use_parallel:
             results = register_pairs_batched(
-                pair_bounds, self._read_tile_region, df, sw, max_shift,
-                self._max_workers, debug=self._debug,
+                pair_bounds,
+                self._read_tile_region,
+                df,
+                sw,
+                max_shift,
+                self._max_workers,
+                debug=self._debug,
             )
         else:
             results = register_pairs_readahead(
-                pair_bounds, self._read_tile_region, df, sw, max_shift,
+                pair_bounds,
+                self._read_tile_region,
+                df,
+                sw,
+                max_shift,
                 debug=self._debug,
             )
         self.pairwise_metrics.update(results)
@@ -835,11 +840,15 @@ class TileFusion:
             logger.warning(
                 "%d tile(s) unconstrained but only %d registered pairs (< %d); leaving them "
                 "at stage positions rather than an unreliable affine fit.",
-                len(unconstrained), len(self.pairwise_metrics), _MIN_PAIRS_FOR_AFFINE,
+                len(unconstrained),
+                len(self.pairwise_metrics),
+                _MIN_PAIRS_FOR_AFFINE,
             )
             return
 
-        cal = fit_stage_to_image_transform(self.pairwise_metrics, self._tile_positions, self._pixel_size)
+        cal = fit_stage_to_image_transform(
+            self.pairwise_metrics, self._tile_positions, self._pixel_size
+        )
         M = cal["M"]
         pos = np.asarray(self._tile_positions, dtype=np.float64)
         ps = np.asarray(self._pixel_size, dtype=np.float64)
@@ -988,6 +997,7 @@ class TileFusion:
 
     def _fuse_plane(self, z_level: int, time_idx: int, block_size: int) -> None:
         """Assemble explicit inputs + write closure and delegate to fusion.fuse_plane."""
+
         def write_block(y0, y1, x0, x1, arr_uint16):
             self.fused_ts[time_idx, :, z_level, y0:y1, x0:x1].write(arr_uint16).result()
 

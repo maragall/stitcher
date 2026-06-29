@@ -4,6 +4,7 @@ A blown-out channel has high std (clipping widens the histogram) but no usable
 gradient texture, so plain std picks it and registration fails. The pick weights std
 by (1 - fraction_saturated); for fluorescence (~no clipping) it is a no-op.
 """
+
 import numpy as np
 
 from tilefusion.core import TileFusion
@@ -11,6 +12,7 @@ from tilefusion.core import TileFusion
 
 class _FakeTF:
     """Minimal stand-in exposing only what _auto_pick_channel touches."""
+
     def __init__(self, stack):  # stack: (n_tiles, C, Y, X)
         self._stack = stack
         self.n_tiles, self.channels, self.Y, self.X = stack.shape
@@ -29,9 +31,9 @@ def test_no_saturation_picks_highest_std_unchanged():
     Y = X = 1100
     n, C = 4, 3
     stack = np.zeros((n, C, Y, X), np.uint16)
-    stack[:, 0] = rng.integers(0, 5000, (n, Y, X))     # low contrast
-    stack[:, 1] = rng.integers(0, 40000, (n, Y, X))    # HIGH contrast, no clipping
-    stack[:, 2] = rng.integers(0, 15000, (n, Y, X))    # medium
+    stack[:, 0] = rng.integers(0, 5000, (n, Y, X))  # low contrast
+    stack[:, 1] = rng.integers(0, 40000, (n, Y, X))  # HIGH contrast, no clipping
+    stack[:, 2] = rng.integers(0, 15000, (n, Y, X))  # medium
     assert _pick(stack) == 1
 
 
@@ -54,8 +56,8 @@ def test_severely_saturated_channel_is_rejected():
     stack[:, 2] = rng.integers(0, 8000, (n, Y, X))
     # raw-std argmax would be ch1; saturation-weighted must pick ch0
     raw_std = [stack[:, c, 300:800, 300:800].std() for c in range(C)]
-    assert int(np.argmax(raw_std)) == 1          # confirm the trap exists
-    assert _pick(stack) == 0                      # ...and the pick avoids it
+    assert int(np.argmax(raw_std)) == 1  # confirm the trap exists
+    assert _pick(stack) == 0  # ...and the pick avoids it
 
 
 def test_mild_saturation_does_not_flip_fluorescence_pick():
@@ -70,5 +72,5 @@ def test_mild_saturation_does_not_flip_fluorescence_pick():
     m = rng.random((n, Y, X)) > 0.98
     best[m] = 65535
     stack[:, 0] = best
-    stack[:, 1] = rng.integers(0, 12000, (n, Y, X))   # clearly lower contrast
+    stack[:, 1] = rng.integers(0, 12000, (n, Y, X))  # clearly lower contrast
     assert _pick(stack) == 0

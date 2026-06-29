@@ -20,16 +20,16 @@ DISTRIBUTE that inconsistency (every seam small) where a spanning-tree solve wou
 CONCENTRATE it (one seam carries the whole jump). A phase-correlation check confirms
 the per-seam residual is a real pixel-signal misalignment, not just bookkeeping.
 """
+
 import numpy as np
 import pytest
 
 from tilefusion.optimization import two_round_optimization, solve_least_squares
 
-
 # --- geometry: 4 tiles in a square = a single cycle (the minimal loopy layout) ---
-T = 256                       # tile size (px)
-OV = 80                       # overlap (px)
-STEP = T - OV                 # 176  -- neighbour spacing
+T = 256  # tile size (px)
+OV = 80  # overlap (px)
+STEP = T - OV  # 176  -- neighbour spacing
 DELTA = np.array([120.0, 0.0])  # injected loop-closure error (full-res px), sized like the real bug
 
 
@@ -39,8 +39,8 @@ def _square_edges(delta=DELTA):
     `delta` (so the shifts around the loop sum to `delta` instead of 0). score 0.9 each."""
     true = {0: (0.0, 0.0), 1: (0.0, STEP), 2: (STEP, STEP), 3: (STEP, 0.0)}
     edges = [
-        {"i": 0, "j": 1, "t": np.array([0.0, STEP]),  "w": np.sqrt(0.9)},
-        {"i": 1, "j": 2, "t": np.array([STEP, 0.0]),  "w": np.sqrt(0.9)},
+        {"i": 0, "j": 1, "t": np.array([0.0, STEP]), "w": np.sqrt(0.9)},
+        {"i": 1, "j": 2, "t": np.array([STEP, 0.0]), "w": np.sqrt(0.9)},
         {"i": 2, "j": 3, "t": np.array([0.0, -STEP]), "w": np.sqrt(0.9)},
         {"i": 3, "j": 0, "t": np.array([-STEP, 0.0]) + delta, "w": np.sqrt(0.9)},
     ]
@@ -62,7 +62,9 @@ def _tree_solve(edges, n_tiles, fixed):
 def test_loop_closure_error_is_distributed_not_concentrated():
     edges, _ = _square_edges()
 
-    off_global = two_round_optimization(edges, 4, [0], rel_thresh=0.5, abs_thresh=2.0, iterative=True)
+    off_global = two_round_optimization(
+        edges, 4, [0], rel_thresh=0.5, abs_thresh=2.0, iterative=True
+    )
     off_tree = _tree_solve(edges, 4, [0])
 
     r_global = _seam_residuals(edges, off_global)
@@ -76,9 +78,9 @@ def test_loop_closure_error_is_distributed_not_concentrated():
         f"global worst seam {r_global.max():.1f}px should be << {inconsistency:.0f}px "
         f"(error not distributed): {r_global.round(1)}"
     )
-    assert r_global.max() / max(np.median(r_global), 1e-6) < 2.0, (
-        f"global seams should be even (distributed), got {r_global.round(1)}"
-    )
+    assert (
+        r_global.max() / max(np.median(r_global), 1e-6) < 2.0
+    ), f"global seams should be even (distributed), got {r_global.round(1)}"
     # The error is conserved, just spread: total residual ~ the injected inconsistency.
     assert r_global.sum() == pytest.approx(inconsistency, rel=0.15), r_global.round(1)
 
@@ -86,9 +88,9 @@ def test_loop_closure_error_is_distributed_not_concentrated():
     assert r_tree.max() == pytest.approx(inconsistency, rel=0.1), r_tree.round(1)
     # ...so the fix must be clearly better on the worst seam (this is the regression guard:
     # reintroduce the MST collapse and r_global.max() jumps back up to r_tree.max()).
-    assert r_global.max() < r_tree.max() / 2.0, (
-        f"global worst {r_global.max():.1f}px vs tree worst {r_tree.max():.1f}px"
-    )
+    assert (
+        r_global.max() < r_tree.max() / 2.0
+    ), f"global worst {r_global.max():.1f}px vs tree worst {r_tree.max():.1f}px"
 
 
 def test_consistent_graph_is_solved_exactly():
@@ -114,11 +116,13 @@ def test_seam_residual_is_a_real_signal_misalignment():
     source = gaussian_filter(rng.standard_normal((H, W)), sigma=2.0)
 
     y0 = x0 = 4
-    tile0 = source[y0:y0 + T, x0:x0 + T]
-    tile1 = source[y0:y0 + T, x0 + STEP:x0 + STEP + T]  # right neighbour; true shift = (0, STEP)
+    tile0 = source[y0 : y0 + T, x0 : x0 + T]
+    tile1 = source[
+        y0 : y0 + T, x0 + STEP : x0 + STEP + T
+    ]  # right neighbour; true shift = (0, STEP)
 
     # the shared overlap: right OV cols of tile0 == left OV cols of tile1
-    strip0 = tile0[:, T - OV:]
+    strip0 = tile0[:, T - OV :]
     strip1 = tile1[:, :OV]
     shift, _, _ = skimage_reg.phase_cross_correlation(strip0, strip1, upsample_factor=10)
     assert np.linalg.norm(shift) < 1.0, f"overlap signals should coincide, got shift {shift}"

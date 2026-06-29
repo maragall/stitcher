@@ -46,12 +46,12 @@ def _resize_stack(stack: np.ndarray, out_hw: Tuple[int, int]) -> np.ndarray:
 
 
 def _resize2d(img: np.ndarray, out_hw: Tuple[int, int]) -> np.ndarray:
-    return zoom(img.astype(np.float32),
-                (out_hw[0] / img.shape[0], out_hw[1] / img.shape[1]), order=1)
+    return zoom(
+        img.astype(np.float32), (out_hw[0] / img.shape[0], out_hw[1] / img.shape[1]), order=1
+    )
 
 
-def _inexact_alm_l1(imgs, l_s, l_d, weight, estimate_darkfield,
-                    tol=1e-6, max_iter=500, rho=1.5):
+def _inexact_alm_l1(imgs, l_s, l_d, weight, estimate_darkfield, tol=1e-6, max_iter=500, rho=1.5):
     """Inexact augmented-Lagrangian solver for the low-rank + sparse decomposition
     at the heart of BaSiC. Ported from PyBaSiC (itself from the BaSiC MATLAB / robust
     PCA). Returns (Ib, Ir, darkfield) flattened over pixels.
@@ -106,13 +106,19 @@ def _inexact_alm_l1(imgs, l_s, l_d, weight, estimate_darkfield,
             R_low = np.mean(R * (lowS * valid), axis=1, keepdims=True)
             B1 = (R_high - R_low) / rmean
             k = valid.sum()
-            t1 = np.sum(B[valid] ** 2); t2 = B[valid].sum(); t3 = B1.sum()
-            t4 = np.sum(B[valid] * B1); t5 = t2 * t3 - k * t4
+            t1 = np.sum(B[valid] ** 2)
+            t2 = B[valid].sum()
+            t3 = B1.sum()
+            t4 = np.sum(B[valid] * B1)
+            t5 = t2 * t3 - k * t4
             B1 = 0.0 if t5 == 0 else (t1 * t3 - t2 * t4) / t5
-            B1 = np.maximum(B1, 0); B1 = np.minimum(B1, B1_uplimit / max(S.mean(), 1e-9))
+            B1 = np.maximum(B1, 0)
+            B1 = np.minimum(B1, B1_uplimit / max(S.mean(), 1e-9))
             Z = B1 * (S.mean() - S)
-            A1 = np.ma.masked_array(R, np.tile(~valid, (1, P * Q))).mean(axis=0, keepdims=True) \
+            A1 = (
+                np.ma.masked_array(R, np.tile(~valid, (1, P * Q))).mean(axis=0, keepdims=True)
                 - B[valid].mean() * S
+            )
             A1 = A1 - A1.mean()
             A_off = A1 - A1.mean() - Z
             Dr_f = _shrink(dctn(np.reshape(A_off, (P, Q)), norm="ortho"), l_d / (ent2 * mu))
@@ -159,7 +165,9 @@ def estimate_flatfield_basic(
     mv = mean_v.mean()
     if mv <= 1e-9 or not np.isfinite(mv):
         # Degenerate (all-zero / non-finite) input -> no correction.
-        return np.ones((Y, X), np.float32), (np.zeros((Y, X), np.float32) if estimate_darkfield else None)
+        return np.ones((Y, X), np.float32), (
+            np.zeros((Y, X), np.float32) if estimate_darkfield else None
+        )
     mean_v = mean_v / mv
     mdct = float(np.abs(dctn(mean_v, norm="ortho")).sum())
     l_s = mdct / 800.0
@@ -225,8 +233,11 @@ def estimate_flatfield_median(
     df = None
     if use_darkfield:
         d = gaussian_filter(np.percentile(cs, 2, axis=0), sigma=sigma)
-        df = (np.full(tile_shape, float(np.median(d)), dtype=np.float32)
-              if constant_darkfield else d.astype(np.float32))
+        df = (
+            np.full(tile_shape, float(np.median(d)), dtype=np.float32)
+            if constant_darkfield
+            else d.astype(np.float32)
+        )
     return ff, df
 
 
@@ -257,8 +268,11 @@ def estimate_flatfield_channel(
         # needs no-light frames; this is a usable retrospective approximation.
         sigma = max(tile_shape) / 16.0
         d = gaussian_filter(np.percentile(cs, 2, axis=0), sigma=sigma)
-        df = (np.full(tile_shape, float(np.median(d)), dtype=np.float32)
-              if constant_darkfield else d.astype(np.float32))
+        df = (
+            np.full(tile_shape, float(np.median(d)), dtype=np.float32)
+            if constant_darkfield
+            else d.astype(np.float32)
+        )
     return ff, df
 
 

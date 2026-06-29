@@ -1,4 +1,5 @@
 """Post-freeze smoke tests for the bundled TileFusion Stitcher application."""
+
 import os
 import sys
 import tempfile
@@ -21,18 +22,21 @@ def run():
 
     def t_numpy():
         import numpy as np
+
         arr = np.arange(12).reshape(3, 4)
         assert arr.sum() == 66
 
     def t_scipy():
         from scipy.ndimage import zoom
         import numpy as np
+
         result = zoom(np.ones((10, 10)), 0.5)
         assert result.shape == (5, 5)
 
     def t_tifffile():
         import numpy as np
         import tifffile
+
         arr = np.zeros((10, 10), dtype=np.uint16)
         with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
             path = f.name
@@ -60,6 +64,7 @@ def run():
 
     def t_pandas():
         import pandas as pd
+
         df = pd.DataFrame({"a": [1, 2, 3]})
         assert len(df) == 3
 

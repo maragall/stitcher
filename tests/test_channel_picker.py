@@ -43,8 +43,12 @@ class TestAutoPickChannel:
     @staticmethod
     def _fake(channels, n_tiles, reader):
         return SimpleNamespace(
-            channels=channels, n_tiles=n_tiles, Y=128, X=128,
-            _read_tile=reader, channel_to_use=None,
+            channels=channels,
+            n_tiles=n_tiles,
+            Y=128,
+            X=128,
+            _read_tile=reader,
+            channel_to_use=None,
         )
 
     def test_single_channel_returns_zero(self):
@@ -55,11 +59,13 @@ class TestAutoPickChannel:
         rng = np.random.default_rng(0)
 
         def read(k):
-            return np.stack([
-                rng.normal(100, 5, (128, 128)),    # ch0: low contrast (signal-poor)
-                rng.normal(100, 50, (128, 128)),   # ch1: HIGH contrast (best)
-                rng.normal(100, 20, (128, 128)),   # ch2: medium
-            ]).astype(np.float32)
+            return np.stack(
+                [
+                    rng.normal(100, 5, (128, 128)),  # ch0: low contrast (signal-poor)
+                    rng.normal(100, 50, (128, 128)),  # ch1: HIGH contrast (best)
+                    rng.normal(100, 20, (128, 128)),  # ch2: medium
+                ]
+            ).astype(np.float32)
 
         fake = self._fake(3, 4, read)
         assert TileFusion._auto_pick_channel(fake) == 1
@@ -67,6 +73,7 @@ class TestAutoPickChannel:
     def test_no_readable_tiles_returns_zero(self):
         def boom(k):
             raise IOError("unreadable")
+
         fake = self._fake(3, 4, boom)
         assert TileFusion._auto_pick_channel(fake) == 0
 
@@ -84,7 +91,10 @@ class TestResolveRegistrationChannel:
 
     def test_none_triggers_autopick(self):
         fake = SimpleNamespace(
-            channels=1, n_tiles=2, Y=64, X=64,
+            channels=1,
+            n_tiles=2,
+            Y=64,
+            X=64,
             _read_tile=lambda k: np.zeros((1, 64, 64), np.float32),
             channel_to_use=None,
         )

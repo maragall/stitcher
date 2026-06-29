@@ -180,6 +180,8 @@ def test_fuse_plane_honours_subpixel_offset():
     col = captured["arr"][0][:, 4]  # column through the bright pixel
     # bright pixel at tile row 4, +0.5 px -> split between output rows 4 and 5
     assert col[4] > 0 and col[5] > 0, f"0.5px shift should split across rows; got {col}"
-    assert abs(int(col[4]) - int(col[5])) < 250, f"0.5px split should be ~even; got {col[4]},{col[5]}"
+    assert (
+        abs(int(col[4]) - int(col[5])) < 250
+    ), f"0.5px split should be ~even; got {col[4]},{col[5]}"
     # integer truncation would have dumped all 1000 into a single row:
     assert col.max() < 900, f"value looks truncated to one row (max={col.max()})"

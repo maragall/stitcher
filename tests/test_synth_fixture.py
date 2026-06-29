@@ -75,7 +75,6 @@ def test_generator_roundtrip_and_determinism(tmp_path):
     generate_fixture(b)
     assert (a / "ground_truth.json").read_bytes() == (b / "ground_truth.json").read_bytes()
     for k in range(4):
-        assert (
-            (a / "ome_tiff" / f"synth_{k}.ome.tiff").read_bytes()
-            == (b / "ome_tiff" / f"synth_{k}.ome.tiff").read_bytes()
-        )
+        assert (a / "ome_tiff" / f"synth_{k}.ome.tiff").read_bytes() == (
+            b / "ome_tiff" / f"synth_{k}.ome.tiff"
+        ).read_bytes()

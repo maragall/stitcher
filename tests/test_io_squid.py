@@ -29,6 +29,7 @@ SYNTH_4FOV = Path(__file__).parent / "fixtures" / "synth_4fov"
 # load_acquisition_params — fixture with JSON present
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestLoadAcquisitionParams:
     @pytest.fixture(scope="class")
     def params(self):
@@ -60,6 +61,7 @@ class TestLoadAcquisitionParams:
 # load_acquisition_params — fallback when JSON is absent
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestLoadAcquisitionParamsFallback:
     @pytest.fixture(scope="class")
     def params(self, tmp_path_factory):
@@ -88,6 +90,7 @@ class TestLoadAcquisitionParamsFallback:
 # channel_names_or_default
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestChannelNamesOrDefault:
     def test_non_empty_returns_as_is(self):
         names = ["DAPI", "GFP", "mCherry"]
@@ -111,6 +114,7 @@ class TestChannelNamesOrDefault:
 # Integration: helpers reproduce what the ome_tiff_tiles reader returns
 # for the synth_4fov fixture (cross-check against the characterization tests)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestHelpersCrossCheckOmeTiffTiles:
     """

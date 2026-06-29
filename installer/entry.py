@@ -1,12 +1,15 @@
 """Frozen entry point for PyInstaller-built TileFusion Stitcher."""
+
 # MUST be the first import + call: in a frozen app, child processes spawned
 # by multiprocessing relaunch the bundle binary. freeze_support() short-
 # circuits the relaunch in the child so it does NOT re-run main() and pop
 # another GUI window. No-op in the parent.
 import multiprocessing
+
 multiprocessing.freeze_support()
 
 import os
+
 # Pin BLAS thread count to 1 BEFORE numpy is imported. macOS gives
 # secondary threads only 512 KB of stack by default, but OpenBLAS's
 # parallel LU path (dgetrf_parallel, used by np.linalg.solve / inv)
@@ -24,6 +27,7 @@ os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import sys
+
 # Force VisPy's legacy QGLWidget on Linux/Windows so the bundled (and
 # patched) vispy avoids the QOpenGLWidget FBO corruption on NVIDIA
 # Blackwell GPUs. SKIP on macOS — Apple deprecated the legacy QGLWidget
@@ -39,24 +43,18 @@ import threading
 if getattr(sys, "frozen", False):
     _meipass = sys._MEIPASS
     if sys.platform == "win32":
-        os.environ["QT_PLUGIN_PATH"] = os.path.join(
-            _meipass, "PyQt5", "Qt5", "plugins"
-        )
+        os.environ["QT_PLUGIN_PATH"] = os.path.join(_meipass, "PyQt5", "Qt5", "plugins")
     elif sys.platform == "darwin":
         # macOS: PyInstaller's @loader_path handles dylib resolution. Don't
         # touch DYLD_LIBRARY_PATH (SIP strips it for child procs and it can
         # break framework loading). Just point Qt at its plugin tree.
         qt_plugins = os.path.join(_meipass, "PyQt5", "Qt5", "plugins")
         os.environ["QT_PLUGIN_PATH"] = qt_plugins
-        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = os.path.join(
-            qt_plugins, "platforms"
-        )
+        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = os.path.join(qt_plugins, "platforms")
     else:
         qt_plugins = os.path.join(_meipass, "PyQt5", "Qt5", "plugins")
         os.environ["QT_PLUGIN_PATH"] = qt_plugins
-        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = os.path.join(
-            qt_plugins, "platforms"
-        )
+        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = os.path.join(qt_plugins, "platforms")
         qt_lib = os.path.join(_meipass, "PyQt5", "Qt5", "lib")
         existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
         os.environ["LD_LIBRARY_PATH"] = f"{_meipass}:{qt_lib}:{existing_ld}"
@@ -96,10 +94,12 @@ if getattr(sys, "frozen", False):
 
 if "--smoke-test" in sys.argv:
     from installer.smoke_test import run
+
     run()
 else:
     try:
         from gui.app import main
+
         main()
     except Exception:
         tb = traceback.format_exc()

@@ -12,12 +12,12 @@ Usage:
 
 Run from the repo root.
 """
+
 from __future__ import annotations
 
 import ast
 import sys
 from pathlib import Path
-
 
 GUI_PATH = Path("gui/app.py")
 TILEFUSION_CORE = Path("src/tilefusion/core.py")
@@ -28,7 +28,9 @@ def _func_args(fn: ast.FunctionDef) -> set[str]:
     return {a.arg for a in (*fn.args.args, *fn.args.kwonlyargs)} - {"self"}
 
 
-def _accept_kwargs_for_class(path: Path, class_name: str, method: str = "__init__") -> set[str] | None:
+def _accept_kwargs_for_class(
+    path: Path, class_name: str, method: str = "__init__"
+) -> set[str] | None:
     """Return accepted kw arg names for a class's method, or None if not found."""
     if not path.exists():
         return None
@@ -37,7 +39,9 @@ def _accept_kwargs_for_class(path: Path, class_name: str, method: str = "__init_
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             for fn in node.body:
                 if isinstance(fn, ast.FunctionDef) and fn.name == method:
-                    if any(isinstance(a, ast.arg) and a.arg == "kwargs" for a in fn.args.kwonlyargs):
+                    if any(
+                        isinstance(a, ast.arg) and a.arg == "kwargs" for a in fn.args.kwonlyargs
+                    ):
                         return None  # accepts **kwargs — anything goes
                     if fn.args.kwarg is not None:
                         return None
@@ -69,10 +73,18 @@ def main() -> int:
     targets: dict[tuple[str, str], set[str] | None] = {
         # callable form: ("Name", call_kind) -> accepted kwargs
         ("TileFusion", "class"): _accept_kwargs_for_class(TILEFUSION_CORE, "TileFusion"),
-        ("optimize_shifts", "method"): _accept_kwargs_for_method(TILEFUSION_CORE, "TileFusion", "optimize_shifts"),
-        ("refine_tile_positions_with_cross_correlation", "method"): _accept_kwargs_for_method(TILEFUSION_CORE, "TileFusion", "refine_tile_positions_with_cross_correlation"),
-        ("save_pairwise_metrics", "method"): _accept_kwargs_for_method(TILEFUSION_CORE, "TileFusion", "save_pairwise_metrics"),
-        ("find_adjacent_pairs", "func"): _accept_kwargs_for_function(REGISTRATION_PATH, "find_adjacent_pairs"),
+        ("optimize_shifts", "method"): _accept_kwargs_for_method(
+            TILEFUSION_CORE, "TileFusion", "optimize_shifts"
+        ),
+        ("refine_tile_positions_with_cross_correlation", "method"): _accept_kwargs_for_method(
+            TILEFUSION_CORE, "TileFusion", "refine_tile_positions_with_cross_correlation"
+        ),
+        ("save_pairwise_metrics", "method"): _accept_kwargs_for_method(
+            TILEFUSION_CORE, "TileFusion", "save_pairwise_metrics"
+        ),
+        ("find_adjacent_pairs", "func"): _accept_kwargs_for_function(
+            REGISTRATION_PATH, "find_adjacent_pairs"
+        ),
         # Worker classes live in gui/app.py — read from there
         ("PreviewWorker", "class"): _accept_kwargs_for_class(GUI_PATH, "PreviewWorker"),
         ("FusionWorker", "class"): _accept_kwargs_for_class(GUI_PATH, "FusionWorker"),
@@ -82,7 +94,9 @@ def main() -> int:
 
     errors: list[str] = []
 
-    def check_call(callee_label: str, accepted: set[str] | None, kwargs: list[str], lineno: int) -> None:
+    def check_call(
+        callee_label: str, accepted: set[str] | None, kwargs: list[str], lineno: int
+    ) -> None:
         if accepted is None:
             return
         bad = [k for k in kwargs if k not in accepted]

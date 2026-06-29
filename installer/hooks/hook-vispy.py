@@ -1,7 +1,7 @@
 from PyInstaller.utils.hooks import collect_data_files
 from vispy.app.backends import CORE_BACKENDS
 
-datas = collect_data_files('vispy')
+datas = collect_data_files("vispy")
 
 hiddenimports = ["vispy.ext._bundled.six"]
 

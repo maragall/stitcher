@@ -41,7 +41,6 @@ from tilefusion.io.ome_tiff_tiles import (
 )
 from tilefusion.io.zarr import load_zarr_metadata, read_zarr_region
 
-
 # ---------------------------------------------------------------------------
 # Committed fixture
 # ---------------------------------------------------------------------------
@@ -67,11 +66,13 @@ def individual_tiffs_folder(tmp_path_factory):
     img_folder = tmp / "0"
     img_folder.mkdir()
 
-    coords = pd.DataFrame({
-        "fov": [0, 1, 2, 3],
-        "x (mm)": [0.0, 1.0, 0.0, 1.0],
-        "y (mm)": [0.0, 0.0, 1.0, 1.0],
-    })
+    coords = pd.DataFrame(
+        {
+            "fov": [0, 1, 2, 3],
+            "x (mm)": [0.0, 1.0, 0.0, 1.0],
+            "y (mm)": [0.0, 0.0, 1.0, 1.0],
+        }
+    )
     coords.to_csv(img_folder / "coordinates.csv", index=False)
 
     rng = np.random.default_rng(42)

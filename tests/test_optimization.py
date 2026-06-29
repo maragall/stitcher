@@ -11,9 +11,16 @@ from tilefusion.optimization import (
 )
 
 
-def _grid_with_injected_transform(n=6, step=795.0, ps=(0.325, 0.325),
-                                  scale_err=0.017, rot_deg=0.5, jitter=3.0, seed=0,
-                                  drop_tile=None):
+def _grid_with_injected_transform(
+    n=6,
+    step=795.0,
+    ps=(0.325, 0.325),
+    scale_err=0.017,
+    rot_deg=0.5,
+    jitter=3.0,
+    seed=0,
+    drop_tile=None,
+):
     """A grid whose true stage->image map is a KNOWN similarity (scale+rotation)+jitter.
 
     Returns (pairwise_metrics, positions, ps, M_true, dropped). Pairs touching
@@ -49,7 +56,9 @@ class TestFitStageToImageTransform:
     tile with no registered pairs) back to ground truth."""
 
     def test_recovers_injected_scale_and_rotation(self):
-        pm, pos, ps, M_true, _ = _grid_with_injected_transform(scale_err=0.017, rot_deg=0.5, jitter=3.0)
+        pm, pos, ps, M_true, _ = _grid_with_injected_transform(
+            scale_err=0.017, rot_deg=0.5, jitter=3.0
+        )
         out = fit_stage_to_image_transform(pm, pos, ps)
         true_scale = (1.017) / ps[0]
         np.testing.assert_allclose(out["scale"], true_scale, rtol=1e-2)
@@ -246,24 +255,25 @@ class TestEdgesFromPairwiseMetrics:
 
 # --- robustness: degenerate / non-finite inputs must never crash the solve ----------
 
+
 def test_solve_least_squares_drops_nonfinite_edges():
     """A NaN/inf weight or shift must be dropped, not crash the SVD (the Codex case)."""
     edges = [
         {"i": 0, "j": 1, "t": np.array([10.0, 0.0]), "w": 1.0},
         {"i": 1, "j": 2, "t": np.array([10.0, 0.0]), "w": 1.0},
-        {"i": 0, "j": 2, "t": np.array([np.nan, 0.0]), "w": 1.0},   # poison row
+        {"i": 0, "j": 2, "t": np.array([np.nan, 0.0]), "w": 1.0},  # poison row
         {"i": 0, "j": 1, "t": np.array([10.0, 0.0]), "w": np.inf},  # poison weight
     ]
     sh = solve_least_squares(edges, 3, [0])
     assert np.all(np.isfinite(sh))
-    assert abs(sh[2, 0] - 20.0) < 1e-6   # chain 0->1->2 still solved from clean edges
+    assert abs(sh[2, 0] - 20.0) < 1e-6  # chain 0->1->2 still solved from clean edges
 
 
 def test_fit_stage_to_image_transform_survives_nonfinite_and_sparse():
     """Non-finite scores must be skipped; <2 usable pairs returns identity, not raise."""
     pm = {
         (0, 1): (0.0, 0.0, 0.9),
-        (1, 2): (0.0, 0.0, np.nan),     # non-finite score -> skipped
+        (1, 2): (0.0, 0.0, np.nan),  # non-finite score -> skipped
         (0, 2): (0.0, 0.0, 0.8),
     }
     pos = [(0.0, 0.0), (0.0, 795.0), (0.0, 1590.0)]

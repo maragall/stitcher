@@ -37,8 +37,9 @@ class _TensorStoreArray:
         return np.asarray(self._ts[idx].read().result())
 
 
-def export_zarr_to_ome_tiff(zarr_dir, pixel_size_um=None, channel_names=None,
-                            tif_path=None, time_increment_s=None):
+def export_zarr_to_ome_tiff(
+    zarr_dir, pixel_size_um=None, channel_names=None, tif_path=None, time_increment_s=None
+):
     """Build a Squid-style OME-TIFF from an already-written fused Zarr tree, on demand.
 
     Re-opens the full-res scale0 array from disk (so it is correct even after the
@@ -57,8 +58,9 @@ def export_zarr_to_ome_tiff(zarr_dir, pixel_size_um=None, channel_names=None,
         pixel_size_um = (1.0, 1.0)
         try:
             meta = json.loads((zarr_dir / "zarr.json").read_text())
-            scale = (meta["attributes"]["ome"]["multiscales"][0]["datasets"][0]
-                     ["coordinateTransformations"][0]["scale"])
+            scale = meta["attributes"]["ome"]["multiscales"][0]["datasets"][0][
+                "coordinateTransformations"
+            ][0]["scale"]
             pixel_size_um = (float(scale[-2]), float(scale[-1]))  # (y, x) of t,c,z,y,x
         except Exception:
             logger.debug("export_zarr_to_ome_tiff: could not read pixel size from NGFF; using 1.0")
@@ -71,10 +73,15 @@ def export_zarr_to_ome_tiff(zarr_dir, pixel_size_um=None, channel_names=None,
         z = str(zarr_dir)
         base = z[: -len(".ome.zarr")] if z.endswith(".ome.zarr") else z
         tif_path = base + ".ome.tif"
-    write_ome_tiff(_TensorStoreArray(store), tif_path,
-                   pixel_size_um=pixel_size_um, channel_names=channel_names,
-                   time_increment_s=time_increment_s)
+    write_ome_tiff(
+        _TensorStoreArray(store),
+        tif_path,
+        pixel_size_um=pixel_size_um,
+        channel_names=channel_names,
+        time_increment_s=time_increment_s,
+    )
     return tif_path
+
 
 _UM = "µm"  # OME unit string Squid uses for PhysicalSize*Unit
 
@@ -85,10 +92,10 @@ def _as_5d_tczyx(array):
     shape = tuple(array.shape)
     if len(shape) == 5:
         return array, shape
-    if len(shape) == 3:           # (C, Y, X) -> (1, C, 1, Y, X)
+    if len(shape) == 3:  # (C, Y, X) -> (1, C, 1, Y, X)
         c, y, x = shape
         return array, (1, c, 1, y, x)
-    if len(shape) == 2:           # (Y, X) -> (1, 1, 1, Y, X)
+    if len(shape) == 2:  # (Y, X) -> (1, 1, 1, Y, X)
         y, x = shape
         return array, (1, 1, 1, y, x)
     raise ValueError(f"Unsupported array shape {shape}; expected 2D, 3D (CYX) or 5D (TCZYX)")
@@ -100,12 +107,19 @@ def _read_plane(array, ndim, t, c, z):
         return np.asarray(array[t, c, z])
     if ndim == 3:
         return np.asarray(array[c])
-    return np.asarray(array[:])      # 2D
+    return np.asarray(array[:])  # 2D
 
 
-def write_ome_tiff(array, output_path, pixel_size_um=(1.0, 1.0), z_step_um=None,
-                   time_increment_s=None, channel_names=None, tile=(1024, 1024),
-                   creator="tilefusion"):
+def write_ome_tiff(
+    array,
+    output_path,
+    pixel_size_um=(1.0, 1.0),
+    z_step_um=None,
+    time_increment_s=None,
+    channel_names=None,
+    tile=(1024, 1024),
+    creator="tilefusion",
+):
     """Stream `array` (zarr-like, 2D/3D-CYX/5D-TCZYX) to a tiled BigTIFF OME-TIFF.
 
     pixel_size_um : (y_um, x_um) physical pixel size.
@@ -126,16 +140,20 @@ def write_ome_tiff(array, output_path, pixel_size_um=(1.0, 1.0), z_step_um=None,
     meta = {
         "axes": "TZCYX",
         "Creator": creator,
-        "PhysicalSizeX": px_um, "PhysicalSizeXUnit": _UM,
-        "PhysicalSizeY": py_um, "PhysicalSizeYUnit": _UM,
+        "PhysicalSizeX": px_um,
+        "PhysicalSizeXUnit": _UM,
+        "PhysicalSizeY": py_um,
+        "PhysicalSizeYUnit": _UM,
         "Channel": {"Name": list(channel_names)},
     }
     if z_step_um is not None:
-        meta["PhysicalSizeZ"] = float(z_step_um); meta["PhysicalSizeZUnit"] = _UM
+        meta["PhysicalSizeZ"] = float(z_step_um)
+        meta["PhysicalSizeZUnit"] = _UM
     # Squid's writer records the time-lapse interval as TimeIncrement (seconds), not a
     # PhysicalSizeT; match it for full OME parity when a Δt is known.
     if time_increment_s is not None:
-        meta["TimeIncrement"] = float(time_increment_s); meta["TimeIncrementUnit"] = "s"
+        meta["TimeIncrement"] = float(time_increment_s)
+        meta["TimeIncrementUnit"] = "s"
 
     n_tiles_x = (X + tw - 1) // tw
     n_tiles_y = (Y + th - 1) // th
@@ -150,9 +168,11 @@ def write_ome_tiff(array, output_path, pixel_size_um=(1.0, 1.0), z_step_um=None,
                 for c in range(C):
                     plane = _read_plane(arr, ndim, t, c, z)
                     for ty in range(n_tiles_y):
-                        y0 = ty * th; y1 = min(y0 + th, Y)
+                        y0 = ty * th
+                        y1 = min(y0 + th, Y)
                         for tx in range(n_tiles_x):
-                            x0 = tx * tw; x1 = min(x0 + tw, X)
+                            x0 = tx * tw
+                            x1 = min(x0 + tw, X)
                             block = plane[y0:y1, x0:x1]
                             if block.shape != (th, tw):
                                 pad = np.zeros((th, tw), dtype=dtype)
@@ -163,7 +183,7 @@ def write_ome_tiff(array, output_path, pixel_size_um=(1.0, 1.0), z_step_um=None,
     with tifffile.TiffWriter(output_path, bigtiff=True, ome=True) as tw_:
         tw_.write(
             tiles(),
-            shape=(T, Z, C, Y, X),       # TZCYX (Squid order)
+            shape=(T, Z, C, Y, X),  # TZCYX (Squid order)
             dtype=dtype,
             tile=(th, tw),
             photometric="minisblack",

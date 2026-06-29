@@ -21,7 +21,7 @@ class TestRegisterPairWorker:
         # A known sub-pixel offset must survive as a float -- the int-cast (now removed)
         # would have rounded both components to exact integers.
         rng = np.random.default_rng(0)
-        ref = (rng.random((128, 128)).astype(np.float32) * 1000)
+        ref = rng.random((128, 128)).astype(np.float32) * 1000
         dy_true, dx_true = 2.6, -1.3
         moving = nd_shift(ref, (-dy_true, -dx_true), order=3, mode="nearest").astype(np.float32)
         # args: (i, j, patch_i, patch_j, df, sw, max_shift)

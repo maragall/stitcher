@@ -4,6 +4,7 @@ Production estimation is BaSiC (low-rank + sparse, pure numpy port). The tests u
 synthetic ground truth with tolerances rather than golden values (the iterative
 solver drifts across numpy/scipy versions, so exact snapshots would be brittle).
 """
+
 import numpy as np
 import pytest
 
@@ -84,18 +85,21 @@ def test_uniform_illumination_gives_flat_field():
     stack = rng.uniform(40, 200, (30, Y, X)).astype(np.float32)
     ff, _ = estimate_flatfield_basic(stack)
     assert abs(float(ff.mean()) - 1.0) < 1e-3
-    assert (ff.max() - ff.min()) < 0.10            # field is essentially flat
+    assert (ff.max() - ff.min()) < 0.10  # field is essentially flat
 
 
 # --------------------------------------------------------------------------- #
 # 5. Degenerate inputs never raise / never NaN -> safe unit fallback.
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("make", [
-    lambda: np.zeros((10, 64, 64), np.float32),                       # all zero
-    lambda: np.ones((1, 64, 64), np.float32) * 123.0,                 # single tile
-    lambda: np.full((8, 64, 64), 50.0, np.float32),                   # constant tiles
-    lambda: np.full((5, 64, 64), 7.0, np.float32),                    # few constant tiles
-])
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: np.zeros((10, 64, 64), np.float32),  # all zero
+        lambda: np.ones((1, 64, 64), np.float32) * 123.0,  # single tile
+        lambda: np.full((8, 64, 64), 50.0, np.float32),  # constant tiles
+        lambda: np.full((5, 64, 64), 7.0, np.float32),  # few constant tiles
+    ],
+)
 def test_degenerate_inputs_are_safe(make):
     stack = make()
     ff, _ = estimate_flatfield_basic(stack, estimate_darkfield=False)
@@ -105,7 +109,7 @@ def test_degenerate_inputs_are_safe(make):
 
 def test_bad_shape_raises():
     with pytest.raises(ValueError):
-        estimate_flatfield_basic(np.zeros((64, 64), np.float32))      # 2D, not (n,Y,X)
+        estimate_flatfield_basic(np.zeros((64, 64), np.float32))  # 2D, not (n,Y,X)
 
 
 # --------------------------------------------------------------------------- #
@@ -124,22 +128,24 @@ def test_deterministic():
 def test_apply_flatfield_roundtrip_flattens_shading():
     Y = X = 160
     shading = _shading(Y, X)
-    content = 120.0                                  # uniform content
+    content = 120.0  # uniform content
     tile = (shading * content).astype(np.float32)[None]
-    stack = np.repeat(tile, 20, axis=0)              # 20 identical-content tiles + shading
+    stack = np.repeat(tile, 20, axis=0)  # 20 identical-content tiles + shading
     # vary content per tile so BaSiC sees structure to separate
     rng = np.random.default_rng(6)
     stack = (shading[None] * rng.uniform(80, 160, (20, Y, X))).astype(np.float32)
     ff, _ = estimate_flatfield_basic(stack)
     corrected = apply_flatfield(stack[0][None], ff[None], None)[0].astype(np.float32)
     raw = stack[0]
+
     # corrected content should be flatter across the FOV than the raw (shaded) tile:
     # compare centre-vs-corner ratio, which the shading otherwise imposes.
     def corner_center(img):
         s = img.shape[0] // 8
         corners = np.mean([img[:s, :s].mean(), img[-s:, -s:].mean()])
-        center = img[Y // 2 - s:Y // 2 + s, X // 2 - s:X // 2 + s].mean()
+        center = img[Y // 2 - s : Y // 2 + s, X // 2 - s : X // 2 + s].mean()
         return corners / center
+
     assert abs(corner_center(corrected) - 1.0) < abs(corner_center(raw) - 1.0)
 
 
@@ -152,7 +158,7 @@ def test_few_tiles_field_is_bounded():
     ff, _ = estimate_flatfield_basic(stack)
     assert np.isfinite(ff).all() and (ff > 0).all()
     assert abs(float(ff.mean()) - 1.0) < 1e-3
-    assert (ff.max() - ff.min()) < 1.0               # not the median's blown-up range
+    assert (ff.max() - ff.min()) < 1.0  # not the median's blown-up range
 
 
 # --------------------------------------------------------------------------- #
@@ -163,7 +169,7 @@ def test_channel_helper_and_darkfield_shapes():
     stack, _ = _observed_stack(128, 128, 30, seed=8)
     ff, df = estimate_flatfield_channel(stack, use_darkfield=True, constant_darkfield=True)
     assert ff.shape == (128, 128) and df.shape == (128, 128)
-    assert np.allclose(df, df.flat[0])               # constant darkfield
+    assert np.allclose(df, df.flat[0])  # constant darkfield
     assert np.isfinite(ff).all() and (ff > 0).all()
 
 

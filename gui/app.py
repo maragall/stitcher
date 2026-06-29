@@ -387,7 +387,11 @@ def _registration_qc(tf) -> str:
     confidence the global solve is weighted by). Lets the user sanity-check a run."""
     from tilefusion.registration import find_adjacent_pairs
 
-    nccs = np.array([m[2] for m in tf.pairwise_metrics.values()]) if tf.pairwise_metrics else np.array([])
+    nccs = (
+        np.array([m[2] for m in tf.pairwise_metrics.values()])
+        if tf.pairwise_metrics
+        else np.array([])
+    )
     try:
         cand = len(find_adjacent_pairs(tf._tile_positions, tf._pixel_size, (tf.Y, tf.X)))
     except Exception:
@@ -395,9 +399,11 @@ def _registration_qc(tf) -> str:
     locked = len(tf.pairwise_metrics)
     rejected = max(0, cand - locked)
     if nccs.size:
-        return (f"{locked}/{cand} overlaps locked ({rejected} rejected) | "
-                f"NCC mean {nccs.mean():.2f} median {np.median(nccs):.2f} "
-                f"min {nccs.min():.2f} | weak (<0.4): {int((nccs < 0.4).sum())}")
+        return (
+            f"{locked}/{cand} overlaps locked ({rejected} rejected) | "
+            f"NCC mean {nccs.mean():.2f} median {np.median(nccs):.2f} "
+            f"min {nccs.min():.2f} | weak (<0.4): {int((nccs < 0.4).sum())}"
+        )
     return f"{locked} overlaps locked"
 
 
@@ -744,9 +750,7 @@ class FusionWorker(QThread):
                     cur_output.mkdir(parents=True, exist_ok=True)
                     tf.save_pairwise_metrics(metrics_path)
                     reg_time = time.time() - step_start
-                    self.progress.emit(
-                        f"Registration [{reg_time:.1f}s]: {_registration_qc(tf)}"
-                    )
+                    self.progress.emit(f"Registration [{reg_time:.1f}s]: {_registration_qc(tf)}")
                 else:
                     self.progress.emit("Using stage positions (no registration)")
 
@@ -759,7 +763,6 @@ class FusionWorker(QThread):
                     iterative=True,
                 )
                 gc.collect()
-
 
                 tf._tile_positions = [
                     tuple(np.array(pos) + off * np.array(tf.pixel_size))
@@ -1198,9 +1201,7 @@ class OmeTiffExportWorker(QThread):
             from tilefusion.ome_tiff_export import export_zarr_to_ome_tiff
 
             self.progress.emit(f"Exporting OME-TIFF from {self.zarr_dir} ...")
-            tif_path = export_zarr_to_ome_tiff(
-                self.zarr_dir, channel_names=self.channel_names
-            )
+            tif_path = export_zarr_to_ome_tiff(self.zarr_dir, channel_names=self.channel_names)
             self.finished.emit(str(tif_path))
         except Exception as e:
             self.error.emit(f"Error: {str(e)}\n{traceback.format_exc()}")
@@ -2492,7 +2493,9 @@ class StitcherGUI(QMainWindow):
                     blending="additive",
                 )
                 del mip
-            _snapshot_napari_on_close(viewer, Path(zarr_path).stem.replace(".ome", "") + "_MIP", self.log)
+            _snapshot_napari_on_close(
+                viewer, Path(zarr_path).stem.replace(".ome", "") + "_MIP", self.log
+            )
             napari.run()
         except Exception as e:
             self.log(f"Error computing MIP: {e}\n{traceback.format_exc()}")
