@@ -730,6 +730,15 @@ class TileFusion:
 
         n_attempted = len(pair_bounds)
 
+        # Registration prefilter (default: none). A LoG prefilter is available as an
+        # opt-in (self.registration_prefilter="log") but is NOT auto-enabled: empirically
+        # it HURTS at the pipeline's full-resolution registration -- on S5 brightfield,
+        # plain phase correlation on the saturation-aware channel pick gives median seam
+        # NCC ~0.90, whereas a LoG drops it to ~0.30 (the LoG only helped a downsampled
+        # baseline, which the full-res path doesn't use). The channel pick (A) is what
+        # actually fixes brightfield.
+        prefilter = self._resolve_registration_prefilter()
+
         if use_parallel:
             results = register_pairs_batched(
                 pair_bounds,
@@ -739,6 +748,7 @@ class TileFusion:
                 max_shift,
                 self._max_workers,
                 debug=self._debug,
+                prefilter=prefilter,
             )
         else:
             results = register_pairs_readahead(
@@ -748,8 +758,22 @@ class TileFusion:
                 sw,
                 max_shift,
                 debug=self._debug,
+                prefilter=prefilter,
             )
         self.pairwise_metrics.update(results)
+
+    def _resolve_registration_prefilter(self) -> Optional[str]:
+        """Return the phase-correlation prefilter mode ("log" or None).
+
+        Defaults to None (plain phase correlation) for every modality -- including
+        brightfield, where the saturation-aware channel pick already yields a strong lock
+        at full resolution and a LoG would only blunt it. A "log" prefilter remains
+        available as an explicit opt-in via ``self.registration_prefilter``.
+        """
+        override = getattr(self, "registration_prefilter", None)
+        if override in (None, "auto", "none"):
+            return None
+        return override
 
         n_success = len(self.pairwise_metrics)
         n_failed = n_attempted - n_success

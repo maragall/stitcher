@@ -74,3 +74,46 @@ def test_mild_saturation_does_not_flip_fluorescence_pick():
     stack[:, 0] = best
     stack[:, 1] = rng.integers(0, 12000, (n, Y, X))  # clearly lower contrast
     assert _pick(stack) == 0
+
+
+# --------------------------------------------------------------------------- #
+# Brightfield LoG prefilter (B): auto-detection + shift recovery.
+# --------------------------------------------------------------------------- #
+class _FakeMeta:
+    def __init__(self, names, override="auto"):
+        self._metadata = {"channel_names": names}
+        if override != "auto":
+            self.registration_prefilter = override
+
+
+def test_prefilter_defaults_to_none_for_brightfield():
+    # The prefilter is NOT auto-enabled: empirically LoG hurts brightfield at the
+    # full-resolution registration; the saturation-aware channel pick is the fix.
+    bf = _FakeMeta(["BF_LED_matrix_full_B", "BF_LED_matrix_full_G", "BF_LED_matrix_full_RGB"])
+    assert TileFusion._resolve_registration_prefilter(bf) is None
+
+
+def test_prefilter_defaults_to_none_for_fluorescence():
+    fl = _FakeMeta(["Fluorescence_405_nm_Ex", "Fluorescence_488_nm_Ex"])
+    assert TileFusion._resolve_registration_prefilter(fl) is None
+
+
+def test_explicit_log_override_opt_in():
+    # LoG remains available as an explicit opt-in.
+    bf = _FakeMeta(["BF_LED_matrix_full_R"], override="log")
+    assert TileFusion._resolve_registration_prefilter(bf) == "log"
+
+
+def test_log_prefilter_recovers_shift():
+    """register_and_score(prefilter="log") recovers a known integer shift."""
+    from tilefusion.registration import register_and_score
+
+    rng = np.random.default_rng(3)
+    base = rng.random((128, 128)).astype(np.float32)
+    a = base
+    b = np.roll(base, (4, -3), axis=(0, 1))  # known (dy, dx) = (4, -3)
+    shift, score = register_and_score(a, b, win_size=7, prefilter="log")
+    assert shift is not None
+    # magnitude check (sign depends on phase-correlation reference convention)
+    assert abs(abs(shift[0]) - 4) < 1.5 and abs(abs(shift[1]) - 3) < 1.5
+    assert score > 0.5
