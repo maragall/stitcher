@@ -381,6 +381,26 @@ class _TqdmSignalRedirect:
         pass
 
 
+def _registration_qc(tf) -> str:
+    """One-line registration quality summary for the run log: how many candidate
+    overlaps locked vs were rejected, and the NCC distribution (the per-seam
+    confidence the global solve is weighted by). Lets the user sanity-check a run."""
+    from tilefusion.registration import find_adjacent_pairs
+
+    nccs = np.array([m[2] for m in tf.pairwise_metrics.values()]) if tf.pairwise_metrics else np.array([])
+    try:
+        cand = len(find_adjacent_pairs(tf._tile_positions, tf._pixel_size, (tf.Y, tf.X)))
+    except Exception:
+        cand = len(tf.pairwise_metrics)
+    locked = len(tf.pairwise_metrics)
+    rejected = max(0, cand - locked)
+    if nccs.size:
+        return (f"{locked}/{cand} overlaps locked ({rejected} rejected) | "
+                f"NCC mean {nccs.mean():.2f} median {np.median(nccs):.2f} "
+                f"min {nccs.min():.2f} | weak (<0.4): {int((nccs < 0.4).sum())}")
+    return f"{locked} overlaps locked"
+
+
 def _run_fusion_pipeline(
     tiff_path,
     do_registration,
@@ -450,7 +470,7 @@ def _run_fusion_pipeline(
         tf.refine_tile_positions_with_cross_correlation()
         tf.save_pairwise_metrics(metrics_path)
         reg_time = time.time() - step_start
-        log(f"Registration complete: {len(tf.pairwise_metrics)} pairs [{reg_time:.1f}s]")
+        log(f"Registration complete [{reg_time:.1f}s]: {_registration_qc(tf)}")
     else:
         log("Using stage positions (no registration)")
 
@@ -466,6 +486,10 @@ def _run_fusion_pipeline(
     opt_time = time.time() - step_start
     log(f"Positions optimized [{opt_time:.1f}s]")
 
+    # Per-seam elastic distortion correction (applied at fusion).
+    log("Building per-seam distortion correction...")
+    tf._build_distortion_correction()
+
     step_start = time.time()
     log("Computing fused image space...")
     tf._compute_fused_image_space()
@@ -479,6 +503,7 @@ def _run_fusion_pipeline(
     mode_label = "direct placement" if fusion_mode == "direct" else "blended"
     log(f"Fusing tiles ({mode_label})...")
     tf._fuse_tiles(mode=fusion_mode)
+    tf._export_ome_tiff()  # OME-TIFF sibling, while fused_ts is still full-res scale0
     fuse_time = time.time() - step_start
     log(f"Tiles fused [{fuse_time:.1f}s]")
 
@@ -522,6 +547,7 @@ class FusionWorker(QThread):
         registration_channel=None,
         outlier_rel_thresh=0.5,
         outlier_abs_thresh=2.0,
+        enable_distortion=True,
     ):
         super().__init__()
         self.tiff_path = tiff_path
@@ -536,6 +562,7 @@ class FusionWorker(QThread):
         self.registration_channel = registration_channel
         self.outlier_rel_thresh = outlier_rel_thresh
         self.outlier_abs_thresh = outlier_abs_thresh
+        self.enable_distortion = enable_distortion
         self.output_path = None
 
     def _stdout_context(self):
@@ -634,6 +661,7 @@ class FusionWorker(QThread):
                 registration_t=self.registration_t,
                 channel_to_use=self.registration_channel,
             )
+            tf.enable_distortion_correction = self.enable_distortion
             load_time = time.time() - step_start
             self.progress.emit(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each) [{load_time:.1f}s]")
             # Surface the resolved channel so the 'Auto' dropdown can show the pick.
@@ -645,11 +673,18 @@ class FusionWorker(QThread):
 
                 pairs = find_adjacent_pairs(tf._tile_positions, tf._pixel_size, (tf.Y, tf.X))
                 if pairs:
-                    overlaps_y = [p[4] for p in pairs if p[4] > 0]
-                    overlaps_x = [p[5] for p in pairs if p[5] > 0]
-                    median_overlap_y = int(np.median(overlaps_y)) if overlaps_y else 50
-                    median_overlap_x = int(np.median(overlaps_x)) if overlaps_x else 50
-                    blend_pixels = (max(median_overlap_y // 2, 10), max(median_overlap_x // 2, 10))
+                    # Feather over ~2x the actual SEAM overlap. Each pair's overlap has one
+                    # small dimension (the real seam depth) and one full-tile dimension; take
+                    # the small one. A feather >= the overlap makes the inter-tile weight
+                    # cross over GRADUALLY (each pixel dominated by its nearer tile) instead
+                    # of a flat 50/50 band -- which is what stops a residual seam misalignment
+                    # from reading as a doubled feature. overlap/2 (old) left a 50/50 plateau
+                    # that ghosted; ~2x overlap is the convergence point where wider stops
+                    # helping. Capped to tile/2 by make_1d_profile.
+                    seam_overlaps = [min(p[4], p[5]) for p in pairs if min(p[4], p[5]) > 0]
+                    seam = int(np.median(seam_overlaps)) if seam_overlaps else 50
+                    b = max(seam * 2, 10)
+                    blend_pixels = (b, b)
                     tf.blend_pixels = blend_pixels
                     self.progress.emit(
                         f"Auto blend width: {blend_pixels[0]}px (Y), {blend_pixels[1]}px (X)"
@@ -683,6 +718,7 @@ class FusionWorker(QThread):
                         channel_to_use=self.registration_channel,
                         region=region,
                     )
+                    tf.enable_distortion_correction = self.enable_distortion
                     self.progress.emit(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each)")
                     cur_output = region_output
                 else:
@@ -699,7 +735,7 @@ class FusionWorker(QThread):
                     tf.save_pairwise_metrics(metrics_path)
                     reg_time = time.time() - step_start
                     self.progress.emit(
-                        f"Registration: {len(tf.pairwise_metrics)} pairs [{reg_time:.1f}s]"
+                        f"Registration [{reg_time:.1f}s]: {_registration_qc(tf)}"
                     )
                 else:
                     self.progress.emit("Using stage positions (no registration)")
@@ -722,6 +758,10 @@ class FusionWorker(QThread):
                 opt_time = time.time() - step_start
                 self.progress.emit(f"Positions optimized [{opt_time:.1f}s]")
 
+                # Per-seam elastic distortion correction (applied at fusion).
+                self.progress.emit("Building per-seam distortion correction...")
+                tf._build_distortion_correction()
+
                 # Compute fused space
                 step_start = time.time()
                 self.progress.emit("Computing fused image space...")
@@ -739,6 +779,7 @@ class FusionWorker(QThread):
                 self.progress.emit(f"Fusing tiles ({mode_label})...")
                 with self._tqdm_context():
                     tf._fuse_tiles(mode=self.fusion_mode)
+                tf._export_ome_tiff()  # OME-TIFF sibling (full-res scale0)
                 fuse_time = time.time() - step_start
                 self.progress.emit(f"Tiles fused [{fuse_time:.1f}s]")
 
@@ -1377,7 +1418,7 @@ class StitcherGUI(QMainWindow):
         blend_value_layout.addWidget(QLabel("Blend pixels:"))
         self.blend_auto_checkbox = QCheckBox("Auto")
         self.blend_auto_checkbox.setChecked(True)
-        self.blend_auto_checkbox.setToolTip("Auto-compute blend width as half the tile overlap")
+        self.blend_auto_checkbox.setToolTip("Auto-compute blend width as ~2x the seam overlap")
         self.blend_auto_checkbox.toggled.connect(
             lambda checked: self.blend_spin.setEnabled(not checked)
         )
@@ -1389,6 +1430,18 @@ class StitcherGUI(QMainWindow):
         blend_value_layout.addWidget(self.blend_spin)
         blend_value_layout.addStretch()
         settings_layout.addWidget(self.blend_value_widget)
+
+        # Per-seam elastic distortion correction (built after optimization, applied
+        # at fusion). Self-calibrating with an identity fallback, so leaving it on is
+        # safe; the worst case per seam is the translation-only result.
+        self.distortion_checkbox = QCheckBox("Correct lens distortion (per-seam elastic)")
+        self.distortion_checkbox.setChecked(True)
+        self.distortion_checkbox.setToolTip(
+            "Measure how each seam's alignment varies along its length (optical field\n"
+            "distortion / local rotation a single shift can't capture) and warp it out\n"
+            "at fusion. Flat or low-texture seams are left unchanged."
+        )
+        settings_layout.addWidget(self.distortion_checkbox)
 
         # Outlier threshold controls (shown when registration enabled)
         self.outlier_widget = QWidget()

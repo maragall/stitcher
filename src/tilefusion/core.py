@@ -54,6 +54,22 @@ from .io import (
 )
 
 
+class _TensorStoreArray:
+    """Minimal ndarray-like adapter over a tensorstore so the OME-TIFF exporter can
+    slice it lazily (reads only the requested block into memory)."""
+
+    def __init__(self, ts):
+        self._ts = ts
+        self.shape = tuple(int(s) for s in ts.shape)
+        try:
+            self.dtype = np.dtype(ts.dtype.numpy_dtype)
+        except Exception:
+            self.dtype = np.dtype("uint16")
+
+    def __getitem__(self, idx):
+        return np.asarray(self._ts[idx].read().result())
+
+
 class TileFusion:
     """
     GPU/CPU-accelerated tile registration and fusion for 2D OME-TIFF stacks.
@@ -320,6 +336,13 @@ class TileFusion:
         self.padded_shape: Optional[Tuple[int, int]] = None
         self.fused_ts = None
         self.center = None
+        # Per-seam elastic distortion correction (built after optimization, applied
+        # at fusion). Default on; self-calibrating with an identity fallback, so the
+        # worst case is the translation-only result. See tilefusion.distortion.
+        self.enable_distortion_correction: bool = True
+        self._tile_warper = None
+        # Always also emit a Squid-style OME-TIFF alongside the canonical Zarr tree.
+        self.write_ome_tiff: bool = True
 
     def _init_corrections(
         self, flatfield: Optional[np.ndarray], darkfield: Optional[np.ndarray]
@@ -569,6 +592,61 @@ class TileFusion:
             tile = np.broadcast_to(tile, (self.channels, tile.shape[1], tile.shape[2]))
 
         return tile
+
+    def _export_ome_tiff(self) -> None:
+        """Build a Squid-style OME-TIFF from the just-written fused Zarr tree.
+
+        The Zarr is always the canonical output; this adds an OME-TIFF sibling for
+        tools that expect Squid OME-TIFF. Streams tiles from the fused tensorstore so
+        peak memory is independent of mosaic size. Best-effort: never fail the run.
+        """
+        if not getattr(self, "write_ome_tiff", True) or self.fused_ts is None:
+            return
+        try:
+            from .ome_tiff_export import write_ome_tiff
+
+            out = str(self.output_path)
+            tif_path = (out[: -len(".ome.zarr")] if out.endswith(".ome.zarr") else out) + ".ome.tif"
+            py, px = float(self._pixel_size[0]), float(self._pixel_size[1])
+            names = getattr(self, "_channel_names", None)
+            print(f"Building OME-TIFF: {tif_path}")
+            write_ome_tiff(_TensorStoreArray(self.fused_ts), tif_path,
+                           pixel_size_um=(py, px), channel_names=names)
+        except Exception as e:
+            print(f"OME-TIFF export skipped ({e}); the Zarr tree is still written.")
+
+    def _tile_field(self, tile_idx: int):
+        """Per-tile elastic displacement field (2, Y, X) for the fusion sampler, or
+        None if this tile has no correction. The fold happens inside the numba blend
+        (accumulate_tile_shard_distorted), so there is no separate warp pass and the
+        raw reads feed both registration and fusion unchanged."""
+        if self._tile_warper is None:
+            return None
+        return self._tile_warper.field(tile_idx)
+
+    def _build_distortion_correction(self) -> None:
+        """Build the per-seam elastic distortion correction (applied at fusion).
+
+        Call AFTER optimization offsets are applied to _tile_positions and BEFORE
+        fusion. Measures the residual that varies ALONG each seam (optical field
+        distortion / local rotation that one translation per tile can't capture) and
+        builds per-tile warp fields. Self-calibrating with an identity fallback at
+        every gate, so any failure degrades to the translation-only result rather
+        than breaking the run. Shared by run(), the GUI worker, and the CLI path.
+        """
+        self._tile_warper = None
+        if not self.enable_distortion_correction or len(self.pairwise_metrics) == 0:
+            return
+        try:
+            from .distortion import build_seam_corrections, TileWarper
+
+            print("Building per-seam elastic distortion correction...")
+            corrections = build_seam_corrections(self)
+            if corrections:
+                self._tile_warper = TileWarper(corrections, self.Y, self.X)
+        except Exception as e:
+            print(f"Distortion correction skipped ({e}); using translation-only placement.")
+            self._tile_warper = None
 
     def _read_tile_region(
         self,
@@ -929,6 +1007,7 @@ class TileFusion:
 
         fuse_plane(
             read_tile=self._read_tile,
+            get_field=self._tile_field,
             write_block=write_block,
             origins=self._tile_pixel_origins(),
             padded_shape=self.padded_shape,
@@ -1074,6 +1153,8 @@ class TileFusion:
             for pos, off in zip(self._tile_positions, self.global_offsets)
         ]
 
+        self._build_distortion_correction()
+
         print("Computing fused image space...")
         self._compute_fused_image_space()
         self._pad_to_chunk_multiple()
@@ -1091,6 +1172,10 @@ class TileFusion:
 
         print("Fusing tiles...")
         self._fuse_tiles()
+
+        # Export the OME-TIFF now, while fused_ts is still the full-res scale0 (the
+        # multiscale step below can repoint it at a coarser pyramid level).
+        self._export_ome_tiff()
 
         write_scale_group_metadata(self.output_path / "scale0")
 

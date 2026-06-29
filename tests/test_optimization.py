@@ -242,3 +242,34 @@ class TestEdgesFromPairwiseMetrics:
 
         assert links[0]["w"] == pytest.approx(0.5)
         assert links[1]["w"] == pytest.approx(1.0)
+
+
+# --- robustness: degenerate / non-finite inputs must never crash the solve ----------
+
+def test_solve_least_squares_drops_nonfinite_edges():
+    """A NaN/inf weight or shift must be dropped, not crash the SVD (the Codex case)."""
+    edges = [
+        {"i": 0, "j": 1, "t": np.array([10.0, 0.0]), "w": 1.0},
+        {"i": 1, "j": 2, "t": np.array([10.0, 0.0]), "w": 1.0},
+        {"i": 0, "j": 2, "t": np.array([np.nan, 0.0]), "w": 1.0},   # poison row
+        {"i": 0, "j": 1, "t": np.array([10.0, 0.0]), "w": np.inf},  # poison weight
+    ]
+    sh = solve_least_squares(edges, 3, [0])
+    assert np.all(np.isfinite(sh))
+    assert abs(sh[2, 0] - 20.0) < 1e-6   # chain 0->1->2 still solved from clean edges
+
+
+def test_fit_stage_to_image_transform_survives_nonfinite_and_sparse():
+    """Non-finite scores must be skipped; <2 usable pairs returns identity, not raise."""
+    pm = {
+        (0, 1): (0.0, 0.0, 0.9),
+        (1, 2): (0.0, 0.0, np.nan),     # non-finite score -> skipped
+        (0, 2): (0.0, 0.0, 0.8),
+    }
+    pos = [(0.0, 0.0), (0.0, 795.0), (0.0, 1590.0)]
+    out = fit_stage_to_image_transform(pm, pos, (0.325, 0.325))
+    assert np.all(np.isfinite(out["M"]))
+    # all-bad -> identity fallback, no exception
+    bad = {(0, 1): (np.nan, 0.0, 0.5)}
+    out2 = fit_stage_to_image_transform(bad, pos, (0.325, 0.325))
+    assert np.allclose(out2["M"], np.eye(2))

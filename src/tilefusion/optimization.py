@@ -1,9 +1,24 @@
 """
 Global position optimization.
 
-Least-squares optimization of tile positions from pairwise measurements.
-Uses minimum spanning tree (MST) to select the most reliable edges
-before optimization, reducing noise from redundant/bad edges.
+Least-squares optimization of tile positions from pairwise measurements, modelled
+as a translation-only pose graph (tiles = nodes, registered overlaps = edges
+carrying a relative-shift measurement).
+
+We solve the FULL weighted overlap graph in one least-squares pass so the
+unavoidable loop-closure inconsistency (the relative shifts around any cycle do
+not sum to exactly zero, because each registration is noisy) is DISTRIBUTED across
+every overlap, then iteratively reject blunder edges by a scale-relative criterion.
+This is the globally-optimal-stitching approach (Preibisch et al. 2009, "Globally
+optimal stitching of tiled 3D microscopic image acquisitions"; Hoerl et al. 2019,
+"BigStitcher").
+
+We deliberately do NOT collapse the graph to a spanning tree before solving. A
+spanning tree has no cycles, so it satisfies its own edges exactly -- but only by
+discarding the redundant edges, which dumps the entire accumulated loop-closure
+error onto the seams the tree excluded. Concentrated on one seam, that error fuses
+as a visibly doubled feature ("double-painting"). The global solve spreads the same
+error thinly across all seams, below the visible threshold.
 """
 
 import logging
@@ -12,62 +27,6 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 logger = logging.getLogger(__name__)
-
-
-def _build_mst(edges: List[Dict[str, Any]], n_tiles: int) -> List[Dict[str, Any]]:
-    """
-    Select edges forming a minimum spanning tree (maximum-weight spanning tree,
-    since higher SSIM weight = more reliable).
-
-    Uses Kruskal's algorithm on the negated weights.
-
-    Parameters
-    ----------
-    edges : list of dict
-        All available edges with 'i', 'j', 'w' keys.
-    n_tiles : int
-        Total number of tiles.
-
-    Returns
-    -------
-    mst_edges : list of dict
-        Subset of edges forming the MST.
-    """
-    if not edges:
-        return []
-
-    # Sort by weight descending (we want maximum spanning tree)
-    sorted_edges = sorted(edges, key=lambda e: e["w"], reverse=True)
-
-    # Union-Find for Kruskal's
-    parent = list(range(n_tiles))
-    rank = [0] * n_tiles
-
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(x, y):
-        rx, ry = find(x), find(y)
-        if rx == ry:
-            return False
-        if rank[rx] < rank[ry]:
-            rx, ry = ry, rx
-        parent[ry] = rx
-        if rank[rx] == rank[ry]:
-            rank[rx] += 1
-        return True
-
-    mst_edges = []
-    for edge in sorted_edges:
-        if union(edge["i"], edge["j"]):
-            mst_edges.append(edge)
-        if len(mst_edges) == n_tiles - 1:
-            break
-
-    return mst_edges
 
 
 def _check_connectivity(edges: List[Dict[str, Any]], n_tiles: int) -> List[List[int]]:
@@ -130,6 +89,18 @@ def solve_least_squares(edges: List[Dict[str, Any]], n_tiles: int, fixed_indices
     shifts : ndarray of shape (n_tiles, 2)
         Optimized shifts for each tile.
     """
+    # Drop any edge with a non-finite weight or shift before building the system: a
+    # single NaN/inf (e.g. a degenerate registration) poisons the whole solve and is
+    # the usual cause of "SVD did not converge". Connectivity is re-checked by callers.
+    clean = [e for e in edges
+             if np.isfinite(e["w"]) and np.all(np.isfinite(np.asarray(e["t"], float)))]
+    if len(clean) != len(edges):
+        # debug, not warning: this runs once per iterative-rejection round, so warning
+        # would flood; the drop is expected and handled.
+        logger.debug("solve_least_squares: dropped %d/%d edges with non-finite "
+                     "weight/shift", len(edges) - len(clean), len(edges))
+    edges = clean
+
     shifts = np.zeros((n_tiles, 2), dtype=np.float64)
     for axis in range(2):
         m = len(edges) + len(fixed_indices)
@@ -147,9 +118,64 @@ def solve_least_squares(edges: List[Dict[str, Any]], n_tiles: int, fixed_indices
             A[row, idx] = 1.0
             b[row] = 0.0
             row += 1
-        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
-        shifts[:, axis] = sol
+        shifts[:, axis] = _solve_axis(A, b, n_tiles)
     return shifts
+
+
+def _solve_axis(A: np.ndarray, b: np.ndarray, n_tiles: int) -> np.ndarray:
+    """Least-squares solve for one axis, robust to LAPACK SVD non-convergence.
+
+    np.linalg.lstsq uses the gelsd (SVD) driver, which occasionally fails to converge
+    on large or ill-conditioned dense systems. On failure we fall back to the normal
+    equations with a tiny ridge (an LU/Cholesky path, no SVD); for a well-conditioned
+    full-rank system the ridge is negligible and the result matches lstsq, so good data
+    is unaffected and only the pathological case takes the fallback.
+    """
+    try:
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+        if np.all(np.isfinite(sol)):
+            return sol
+        logger.warning("solve_least_squares: lstsq returned non-finite solution; "
+                       "using ridge normal equations")
+    except np.linalg.LinAlgError as e:
+        logger.warning("solve_least_squares: lstsq failed (%s); using ridge normal "
+                       "equations", e)
+    AtA = A.T @ A
+    ridge = 1e-9 * (np.trace(AtA) / max(n_tiles, 1) + 1.0)
+    AtA[np.diag_indices_from(AtA)] += ridge
+    try:
+        return np.linalg.solve(AtA, A.T @ b)
+    except np.linalg.LinAlgError:
+        # Last resort: pseudo-inverse of the (small, regularized) normal matrix.
+        return np.linalg.pinv(AtA) @ (A.T @ b)
+
+
+def _num_components(edges: List[Dict[str, Any]], n_tiles: int) -> int:
+    """Number of connected components in the tile graph defined by `edges`."""
+    return len(_check_connectivity(edges, n_tiles))
+
+
+# An edge is a candidate blunder only if its post-solve residual exceeds this
+# multiple of the MEDIAN residual. It MUST be > 1: the global solve deliberately
+# leaves small, balanced residuals on every good edge (that is how loop-closure
+# error is distributed), so a cutoff at or below the median would over-reject good
+# edges and silently thin the graph back toward a spanning tree -- the exact
+# failure this solver removes. (BigStitcher uses the same relative-error rule; a
+# fixed absolute threshold tuned for the spanning-tree regime is what over-rejects.)
+_REL_OUTLIER_FACTOR = 3.0
+
+# Absolute floor (px) below which a residual is NEVER an outlier, regardless of the
+# relative test. This must be set well above the largest residual a *good* edge can
+# carry, because on a real (sparse/loopy) graph the interior solves to a sub-pixel
+# median, which would drive factor*median (and any small abs_thresh from a caller)
+# down to a couple of pixels -- at which point the rejection deletes normal
+# distributed residuals and RE-CONCENTRATES loop-closure error onto real tissue seams
+# (measured on the full TMA: a 2px floor left a 130px worst seam; this 150px floor
+# leaves 44px == the no-rejection solve). 150px sits just above registration's
+# max_shift gate (128px), so only an edge the solve cannot satisfy within any
+# plausible registered shift -- i.e. a genuine blunder -- is ever dropped. Moderate
+# disagreement is KEPT and averaged, never rejected.
+_BLUNDER_FLOOR_PX = 150.0
 
 
 def two_round_optimization(
@@ -161,89 +187,99 @@ def two_round_optimization(
     iterative: bool,
 ) -> np.ndarray:
     """
-    Perform two-round (or iterative two-round) robust optimization:
-    1. Select MST edges for robustness (fewer, higher-quality edges).
-    2. Solve on MST edges.
-    3. Remove any edge whose residual > max(abs_thresh, rel_thresh * median(residuals)).
-    4. Re-solve on the remaining edges.
-    If iterative=True, repeat step 3 + 4 until no more edges are removed.
+    Robust global optimization of tile positions (translation-only pose graph).
 
-    Also checks for disconnected components and warns the user.
+    1. Solve ONE weighted least-squares over the FULL overlap graph, so the
+       loop-closure inconsistency is distributed across all overlaps rather than
+       concentrated on a few edges (no spanning-tree collapse -- see module docstring).
+    2. Conservatively reject only genuine BLUNDERS: take the single worst-disagreeing
+       edge whose residual exceeds max(abs_thresh, factor*median, _BLUNDER_FLOOR_PX),
+       remove it ONLY if doing so does not strand a tile (never drop a bridge), and
+       re-solve. Repeat; if iterative=False, at most one removal. The floor is
+       deliberately high (_BLUNDER_FLOOR_PX): on a real loopy graph the interior solves
+       to a sub-pixel median, so a low threshold would reject normal distributed
+       residuals and re-concentrate loop-closure error onto real seams. Moderate
+       disagreement is kept and averaged, not rejected.
+
+    An edge that is the sole link to a sub-cluster is never dropped (it is kept,
+    down-weighted by its score in the solve). A tile with no registered edge at all
+    is left for the caller's affine/stage-model fallback
+    (TileFusion._place_unconstrained_tiles_with_affine).
 
     Parameters
     ----------
     edges : list of dict
-        Pairwise edge data.
+        Pairwise edge data with 'i', 'j', 't' (2D offset), 'w' (weight) keys.
     n_tiles : int
         Total number of tiles.
     fixed_indices : list of int
-        Tiles to fix at origin.
+        Tiles fixed at origin (the solve anchor).
     rel_thresh : float
-        Relative threshold (fraction of median residual).
+        Relative-outlier multiple of the median residual. Values <= 1 are unsafe on
+        the full graph (they over-reject), so they fall back to _REL_OUTLIER_FACTOR.
     abs_thresh : float
-        Absolute threshold for residual.
+        Caller's absolute residual floor (px). The effective floor is
+        max(abs_thresh, _BLUNDER_FLOOR_PX), so a small caller value cannot make the
+        rejection over-aggressive; only a caller value above the blunder floor tightens it.
     iterative : bool
-        If True, iterate until convergence.
+        If True, repeat reject + re-solve until convergence; else at most one removal.
 
     Returns
     -------
     shifts : ndarray of shape (n_tiles, 2)
         Optimized shifts.
     """
-    # Use MST for initial solve — reduces noise from redundant edges
-    mst_edges = _build_mst(edges, n_tiles)
+    work = list(edges)
+    if not work:
+        return np.zeros((n_tiles, 2), dtype=np.float64)
 
-    if len(mst_edges) < len(edges):
-        logger.info(
-            "MST selected %d of %d edges for optimization", len(mst_edges), len(edges)
-        )
-
-    # Check connectivity
-    components = _check_connectivity(mst_edges, n_tiles)
+    # Connectivity is informational only -- tiles with no edges are placed by the
+    # caller's affine fallback. Warn so a fragmented acquisition is visible.
+    components = _check_connectivity(work, n_tiles)
     if len(components) > 1:
-        sizes = sorted([len(c) for c in components], reverse=True)
-        disconnected_tiles = sum(sizes[1:])
+        sizes = sorted((len(c) for c in components), reverse=True)
         logger.warning(
-            "Tile graph has %d disconnected components (%d tiles disconnected). "
-            "Disconnected tiles will use stage positions.",
-            len(components), disconnected_tiles,
+            "Tile graph has %d disconnected components (%d tiles not connected to "
+            "the anchor; placed by the affine fallback).", len(components), sum(sizes[1:]),
         )
         print(
             f"WARNING: {len(components)} disconnected tile groups detected "
-            f"({disconnected_tiles} tiles may be misaligned). "
+            f"({sum(sizes[1:])} tiles placed by the affine fallback). "
             f"Component sizes: {sizes}"
         )
 
-    # Solve on MST edges
-    work = mst_edges.copy()
+    # rel_thresh below 1 is the unsafe spanning-tree-regime tuning; clamp to a safe factor.
+    factor = rel_thresh if (rel_thresh and rel_thresh > 1.0) else _REL_OUTLIER_FACTOR
+
+    def residuals(ls: List[Dict[str, Any]], sh: np.ndarray) -> np.ndarray:
+        return np.array([np.linalg.norm(sh[e["j"]] - sh[e["i"]] - e["t"]) for e in ls])
+
     shifts = solve_least_squares(work, n_tiles, fixed_indices)
 
-    def compute_res(ls: List[Dict[str, Any]], sh: np.ndarray) -> np.ndarray:
-        return np.array([np.linalg.norm(sh[l["j"]] - sh[l["i"]] - l["t"]) for l in ls])
+    # At most one edge removed per pass; bounded by the edge count.
+    for _ in range(len(work)):
+        res = residuals(work, shifts)
+        if len(res) == 0:
+            break
+        cutoff = max(abs_thresh, factor * float(np.median(res)), _BLUNDER_FLOOR_PX)
+        candidates = [int(k) for k in np.argsort(res)[::-1] if res[k] > cutoff]
+        if not candidates:
+            break  # converged: no relative outlier remains
 
-    res = compute_res(work, shifts)
-    if len(res) == 0:
-        return shifts
-    cutoff = max(abs_thresh, rel_thresh * np.median(res))
-    outliers = set(np.where(res > cutoff)[0])
+        base_n = _num_components(work, n_tiles)
+        removed = False
+        for k in candidates:  # worst first; skip any whose removal would strand a tile
+            trial = work[:k] + work[k + 1:]
+            if _num_components(trial, n_tiles) <= base_n:
+                work.pop(k)  # redundant (loop) edge -- safe to drop
+                removed = True
+                break
+        if not removed:
+            break  # every remaining outlier is a sole bridge; keep them, do not strand
 
-    if iterative:
-        while outliers:
-            for k in sorted(outliers, reverse=True):
-                work.pop(k)
-            if not work:
-                break
-            shifts = solve_least_squares(work, n_tiles, fixed_indices)
-            res = compute_res(work, shifts)
-            if len(res) == 0:
-                break
-            cutoff = max(abs_thresh, rel_thresh * np.median(res))
-            outliers = set(np.where(res > cutoff)[0])
-    else:
-        for k in sorted(outliers, reverse=True):
-            work.pop(k)
-        if work:
-            shifts = solve_least_squares(work, n_tiles, fixed_indices)
+        shifts = solve_least_squares(work, n_tiles, fixed_indices)
+        if not iterative:
+            break
 
     return shifts
 
@@ -319,16 +355,33 @@ def fit_stage_to_image_transform(pairwise_metrics, tile_positions, pixel_size):
     for (i, j), (dy, dx, score) in pairwise_metrics.items():
         stage_disp = pos[j] - pos[i]
         measured = stage_disp / ps + np.array([dy, dx], dtype=np.float64)
+        # Skip non-finite rows (zero/NaN pixel size, NaN registration score/shift); a
+        # single one makes LAPACK reject the whole lstsq ("DLASCL illegal value").
+        if not (np.all(np.isfinite(stage_disp)) and np.all(np.isfinite(measured))
+                and np.isfinite(score)):
+            continue
         S.append(stage_disp)
         P.append(measured)
-        W.append(np.sqrt(max(score, 1e-6)))
+        W.append(np.sqrt(max(float(score), 1e-6)))
+    identity = {"M": np.eye(2), "scale": 1.0, "rotation_deg": 0.0, "anisotropy": 1.0,
+                "residual_rms": float("nan"), "n_pairs": len(S)}
     if len(S) < 2:
-        raise ValueError("need >=2 registered pairs to fit the stage->image transform")
+        # Too few usable pairs to fit. Return an identity stage->image map rather than
+        # raising: the only caller places DISCONNECTED tiles with this, and a sparse or
+        # degenerate graph (e.g. mostly-isolated tiles) must not crash the whole run.
+        logger.warning("fit_stage_to_image_transform: <2 finite pairs; using identity map")
+        return identity
     S = np.asarray(S)
     P = np.asarray(P)
     w = np.asarray(W)[:, None]
     # Weighted least squares: (w*P) = (w*S) @ Mt
-    Mt, *_ = np.linalg.lstsq(w * S, w * P, rcond=None)
+    try:
+        Mt, *_ = np.linalg.lstsq(w * S, w * P, rcond=None)
+        if not np.all(np.isfinite(Mt)):
+            raise np.linalg.LinAlgError("non-finite affine solution")
+    except np.linalg.LinAlgError as e:
+        logger.warning("fit_stage_to_image_transform: lstsq failed (%s); using identity map", e)
+        return identity
     M = Mt.T
     resid = P - S @ Mt
     U, sv, Vt = np.linalg.svd(M)

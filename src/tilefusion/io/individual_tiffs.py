@@ -222,6 +222,24 @@ def _get_tile_filename(
     return img_path
 
 
+def _to_grayscale_2d(arr: np.ndarray) -> np.ndarray:
+    """Reduce a color (H, W, 3/4) channel to a 2D grayscale plane.
+
+    Squid brightfield saves per-LED grayscale channels (..._B/_G/_R, each 2D) AND a
+    composite ..._RGB which is (H, W, 3). A heterogeneous mix of 2D and 3D channels
+    cannot be stacked; reducing color planes to luminance makes every channel 2D. A
+    genuinely color-only acquisition (only an RGB file) also becomes a valid single
+    grayscale channel, so this generalizes beyond the Squid brightfield case.
+    """
+    if arr.ndim <= 2:
+        return arr
+    # Color axis is the trailing one for (H, W, C); fall back to averaging any extra
+    # trailing dims so we always return (H, W).
+    if arr.shape[-1] in (3, 4):
+        return arr[..., :3].mean(axis=-1)
+    return arr.reshape(arr.shape[0], arr.shape[1], -1).mean(axis=-1)
+
+
 def read_individual_tiffs_tile(
     image_folder: Path,
     channel_names: List[str],
@@ -267,7 +285,7 @@ def read_individual_tiffs_tile(
     channels = []
     for channel_name in channel_names:
         img_path = _get_tile_filename(folder, tile_id, channel_name, z_level)
-        arr = tifffile.imread(img_path)
+        arr = _to_grayscale_2d(tifffile.imread(img_path))
         channels.append(arr)
 
     # Handle mismatched channel shapes by padding smaller arrays to the largest shape
@@ -342,7 +360,7 @@ def read_individual_tiffs_region(
 
     img_path = _get_tile_filename(folder, tile_id, channel_name, z_level)
 
-    arr = tifffile.imread(img_path)
+    arr = _to_grayscale_2d(tifffile.imread(img_path))
     if arr.ndim == 2:
         arr = arr[np.newaxis, :, :]
     return arr[:, y_slice, x_slice].astype(np.float32)

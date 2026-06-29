@@ -27,7 +27,6 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 # Shared phase correlation parameters — used in both parallel and sequential paths
-_OVERLAP_RATIO = 0.15  # Typical microscopy overlap is 10-25%
 _UPSAMPLE_FACTOR = 20  # 0.05-px subpixel grid. Swept on the golden fixture: 10->20
 # nearly halves the worst pairwise error (0.085->0.043 px); beyond 20 hits the noise
 # floor with no further gain. Sub-pixel accuracy ALSO requires registering at full
@@ -122,7 +121,6 @@ def register_and_score(
         disambiguate=True,
         normalization="phase",
         upsample_factor=_UPSAMPLE_FACTOR,
-        overlap_ratio=_OVERLAP_RATIO,
     )
     shift_apply = xp.asarray(shift, dtype=xp.float32)
     g2s = shift_array(arr2, shift_vec=shift_apply)

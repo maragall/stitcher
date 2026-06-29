@@ -156,6 +156,92 @@ def accumulate_tile_shard_shifted(
 
 
 @njit(parallel=True)
+def accumulate_tile_shard_distorted(
+    fused: np.ndarray,
+    weight: np.ndarray,
+    tile: np.ndarray,
+    w2d: np.ndarray,
+    y_off: int,
+    x_off: int,
+    sy0: int,
+    sx0: int,
+    sub_Y: int,
+    sub_X: int,
+    fy: float,
+    fx: float,
+    Dy: np.ndarray,
+    Dx: np.ndarray,
+) -> None:
+    """As accumulate_tile_shard_shifted, but the source coordinate also carries a
+    per-pixel elastic displacement (Dy, Dx are float32[tY, tX] in pixels).
+
+    One bilinear sample folds BOTH the sub-pixel registration remainder (fy, fx) and
+    the distortion warp, so there is no separate full-tile warp pass and no double
+    interpolation. A warped tile is w[p] = tile[p + D[p]]; sampling it at the
+    sub-pixel source p - f reads tile[(p - f) + D], so the source coordinate for plane
+    position (sy0+y_i, sx0+x_i) is that minus (fy, fx) plus D at the tile-local pixel.
+    D is indexed at the integer tile coordinate (sub-pixel error in D is negligible:
+    D varies by ~1px over hundreds of px). Dy/Dx are tile-local, so interiors with
+    zero displacement reduce exactly to the sub-pixel-shift behaviour.
+    """
+    C, Yp, Xp = fused.shape
+    _, tY, tX = tile.shape
+    total = sub_Y * sub_X
+
+    for idx in prange(total):
+        y_i = idx // sub_X
+        x_i = idx % sub_X
+        gy = y_off + y_i
+        gx = x_off + x_i
+        if gy < 0 or gy >= Yp or gx < 0 or gx >= Xp:
+            continue
+
+        ty = sy0 + y_i
+        tx = sx0 + x_i
+        src_y = ty - fy + Dy[ty, tx]
+        src_x = tx - fx + Dx[ty, tx]
+        y0 = int(np.floor(src_y))
+        x0 = int(np.floor(src_x))
+        wy = src_y - y0
+        wx = src_x - x0
+        y1 = y0 + 1
+        x1 = x0 + 1
+
+        if y0 < 0:
+            y0 = 0
+        elif y0 > tY - 1:
+            y0 = tY - 1
+        if y1 < 0:
+            y1 = 0
+        elif y1 > tY - 1:
+            y1 = tY - 1
+        if x0 < 0:
+            x0 = 0
+        elif x0 > tX - 1:
+            x0 = tX - 1
+        if x1 < 0:
+            x1 = 0
+        elif x1 > tX - 1:
+            x1 = tX - 1
+
+        w00 = (1.0 - wy) * (1.0 - wx)
+        w01 = (1.0 - wy) * wx
+        w10 = wy * (1.0 - wx)
+        w11 = wy * wx
+        w_val = w2d[y_i, x_i]
+
+        for c in range(C):
+            v = (
+                w00 * tile[c, y0, x0]
+                + w01 * tile[c, y0, x1]
+                + w10 * tile[c, y1, x0]
+                + w11 * tile[c, y1, x1]
+            )
+            fused[c, gy, gx] += v * w_val
+            weight[c, gy, gx] += w_val
+
+
+@njit(parallel=True)
 def normalize_shard(fused: np.ndarray, weight: np.ndarray) -> None:
     """
     Normalize the fused buffer by its weight buffer, in-place.
@@ -238,6 +324,7 @@ def fuse_plane(
     z_level: int = 0,
     time_idx: int = 0,
     show_progress: bool = False,
+    get_field: Callable = None,
 ) -> None:
     """Fuse one z/t plane block-by-block at fixed low memory.
 
@@ -331,7 +418,16 @@ def fuse_plane(
                 # sub-pixel shift is folded into the blend (bilinear sample of the
                 # original tile) so we never resample the whole tile per block; a
                 # zero remainder takes the no-interp fast path (bit-identical).
-                if fy == 0.0 and fx == 0.0:
+                field = get_field(t_idx) if get_field is not None else None
+                if field is not None:
+                    # Per-seam elastic distortion: fold the per-pixel warp into the
+                    # same bilinear sample as the sub-pixel shift (one resample, no
+                    # separate warp pass). field is (2, tY, tX) float32 (dy, dx).
+                    accumulate_tile_shard_distorted(
+                        fused_block, weight_sum, tile_all, w2d, oy0, ox0,
+                        sy0, sx0, sy1 - sy0, sx1 - sx0, fy, fx, field[0], field[1],
+                    )
+                elif fy == 0.0 and fx == 0.0:
                     accumulate_tile_shard(
                         fused_block, weight_sum, tile_all[:, sy0:sy1, sx0:sx1], w2d, oy0, ox0
                     )
