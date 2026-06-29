@@ -1088,7 +1088,7 @@ class FlatfieldDropArea(QFrame):
 
 
 class FlatfieldWorker(QThread):
-    """Worker thread for calculating flatfield using BaSiCPy."""
+    """Worker thread for calculating flatfield (retrospective, internal numpy estimator)."""
 
     progress = pyqtSignal(str)
     finished = pyqtSignal(object, object)  # flatfield, darkfield (or None)
@@ -1102,12 +1102,8 @@ class FlatfieldWorker(QThread):
 
     def run(self):
         try:
-            from basicpy import BaSiC
-            from tilefusion import TileFusion, HAS_BASICPY
-
-            if not HAS_BASICPY:
-                self.error.emit("BaSiCPy is not installed. Install with: pip install basicpy")
-                return
+            from tilefusion import TileFusion
+            from tilefusion.flatfield import estimate_flatfield_channel
 
             self.progress.emit("Loading metadata...")
 
@@ -1145,16 +1141,11 @@ class FlatfieldWorker(QThread):
                     images[i] = tile[ch if ch < tile.shape[0] else 0]
                     del tile
 
-                self.progress.emit(f"Channel {ch + 1}/{n_channels}: fitting BaSiCPy...")
-
-                self.progress.emit(f"Channel {ch + 1}/{n_channels}: fitting BaSiCPy...")
-                basic = BaSiC(get_darkfield=self.use_darkfield, smoothness_flatfield=1.0)
-                basic.fit(images)
-                flatfield[ch] = basic.flatfield.astype(np.float32)
-
+                self.progress.emit(f"Channel {ch + 1}/{n_channels}: estimating flatfield...")
+                ff, df = estimate_flatfield_channel(images, self.use_darkfield)
+                flatfield[ch] = ff
                 if self.use_darkfield:
-                    df_value = np.median(basic.darkfield)
-                    darkfield[ch] = np.full(tile_shape, df_value, dtype=np.float32)
+                    darkfield[ch] = df
 
                 del images
 
@@ -1793,17 +1784,6 @@ class StitcherGUI(QMainWindow):
     def _auto_calculate_flatfield(self):
         """Auto-calculate flatfield when no .npy file exists for the loaded dataset."""
         if not self.drop_area.file_path:
-            self.flatfield_checkbox.setChecked(False)
-            return
-
-        try:
-            from tilefusion import HAS_BASICPY
-
-            if not HAS_BASICPY:
-                self.log("BaSiCPy not installed — flatfield correction disabled.")
-                self.flatfield_checkbox.setChecked(False)
-                return
-        except ImportError:
             self.flatfield_checkbox.setChecked(False)
             return
 

@@ -56,10 +56,6 @@ gui = [
     "ome-zarr>=0.8",
     "dask[array]>=2023.1",
 ]
-flatfield = [
-    "basicpy @ git+https://github.com/QI2lab/BaSiCPy.git",
-    "matplotlib>=3.5",
-]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",

@@ -1,21 +1,60 @@
 """
-Flatfield correction module using BaSiCPy.
+Flatfield correction module.
 
-Provides functions to calculate and apply flatfield (and optionally darkfield)
-correction for microscopy images.
+Retrospective illumination (flatfield) + optional darkfield estimation from the tiles
+themselves, plus apply/save/load helpers. The flatfield is the low-frequency shading
+common across tiles, so we estimate it as the per-pixel MEDIAN across many tiles (which
+cancels the tile-varying content) smoothed to the illumination scale, then normalized to
+mean 1.0. Pure numpy/scipy -- no heavy external solver. For pathological cases (very
+sparse or always-co-located signal) a flatfield computed offline can be supplied via
+load_flatfield().
 """
 
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
+from scipy.ndimage import gaussian_filter
 
-try:
-    from basicpy import BaSiC
+# Retained for backward compatibility: the GUI gates its "Calculate from tiles" button
+# on this flag. Flatfield calculation is now built in, so it is always available.
+HAS_BASICPY = True
 
-    HAS_BASICPY = True
-except ImportError:
-    HAS_BASICPY = False
+
+def estimate_flatfield_channel(
+    channel_stack: np.ndarray,
+    use_darkfield: bool = False,
+    constant_darkfield: bool = True,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Retrospective flatfield (+ optional darkfield) for ONE channel.
+
+    channel_stack : (n_tiles, Y, X). Returns (flatfield (Y, X), normalized to mean 1.0;
+    darkfield (Y, X) or None). Shared by calculate_flatfield and the GUI's per-channel
+    (low-memory) path so both produce identical fields.
+
+    The illumination shading is the low-frequency component common across tiles, so we
+    take the per-pixel median over tiles (which cancels tile-varying content), smooth it
+    to the FOV scale, and normalize to mean 1.0.
+    """
+    cs = np.asarray(channel_stack, dtype=np.float32)
+    tile_shape = cs.shape[1:]
+    sigma = max(tile_shape) / 16.0  # illumination varies over the whole FOV
+
+    ff = gaussian_filter(np.median(cs, axis=0), sigma=sigma)
+    mean_ff = float(ff.mean())
+    ff = ff / mean_ff if mean_ff > 1e-9 else np.ones(tile_shape, dtype=np.float32)
+    ff[ff <= 1e-6] = 1.0  # guard divide-by-zero at apply time
+    ff = ff.astype(np.float32)
+
+    df = None
+    if use_darkfield:
+        # Additive-offset proxy: the dimmest consistent level across tiles (a low
+        # percentile is more stable than the min), smoothed. True dark-current estimation
+        # needs no-light frames; this is a usable retrospective approximation.
+        d = gaussian_filter(np.percentile(cs, 2, axis=0), sigma=sigma)
+        df = (np.full(tile_shape, float(np.median(d)), dtype=np.float32)
+              if constant_darkfield else d.astype(np.float32))
+    return ff, df
 
 
 def calculate_flatfield(
@@ -24,7 +63,12 @@ def calculate_flatfield(
     constant_darkfield: bool = True,
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """
-    Calculate flatfield (and optionally darkfield) using BaSiCPy.
+    Estimate flatfield (and optionally darkfield) from the tiles themselves.
+
+    Retrospective method (numpy/scipy, no external solver): the illumination shading is
+    the low-frequency component common across tiles, so per channel we take the
+    per-pixel median over the tiles (cancels tile-varying content), smooth it to the
+    illumination scale, and normalize to mean 1.0.
 
     Parameters
     ----------
@@ -48,16 +92,9 @@ def calculate_flatfield(
 
     Raises
     ------
-    ImportError
-        If basicpy is not installed.
     ValueError
         If tiles list is empty or tiles have inconsistent shapes.
     """
-    if not HAS_BASICPY:
-        raise ImportError(
-            "basicpy is required for flatfield calculation. Install with: pip install basicpy"
-        )
-
     if not tiles:
         raise ValueError("tiles list is empty")
 
@@ -87,26 +124,10 @@ def calculate_flatfield(
     for ch in range(n_channels):
         # Stack channel data from all tiles: shape (n_tiles, Y, X)
         channel_stack = np.stack([tile[ch] for tile in tiles], axis=0)
-
-        # Create BaSiC instance and fit
-        basic = BaSiC(get_darkfield=use_darkfield, smoothness_flatfield=1.0)
-        try:
-            basic.fit(channel_stack)
-        except Exception as exc:
-            raise RuntimeError(
-                f"BaSiCPy flatfield fitting failed for channel {ch} "
-                f"with data shape {channel_stack.shape}"
-            ) from exc
-
-        flatfield[ch] = basic.flatfield.astype(np.float32)
-
+        ff, df = estimate_flatfield_channel(channel_stack, use_darkfield, constant_darkfield)
+        flatfield[ch] = ff
         if use_darkfield:
-            if constant_darkfield:
-                # Use median value for constant darkfield (more robust than mean)
-                df_value = np.median(basic.darkfield)
-                darkfield[ch] = np.full(tile_shape, df_value, dtype=np.float32)
-            else:
-                darkfield[ch] = basic.darkfield.astype(np.float32)
+            darkfield[ch] = df
 
     return flatfield, darkfield
 
