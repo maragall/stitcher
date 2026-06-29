@@ -131,7 +131,6 @@ class PreviewWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(object, object, object)  # color_before, color_after, fused
     error = pyqtSignal(str)
-    resolved_channel = pyqtSignal(int)  # channel auto-pick resolved to (for the 'Auto' label)
 
     def __init__(
         self,
@@ -183,8 +182,6 @@ class PreviewWorker(QThread):
                 f"Preview settings IN USE -> registration channel: {tf_full.channel_to_use}"
                 f"  |  downsample: {self.downsample_factor}x"
             )
-            # Surface the resolved channel so the 'Auto' dropdown can show the pick.
-            self.resolved_channel.emit(int(tf_full.channel_to_use))
 
             positions = np.array(tf_full._tile_positions)
 
@@ -547,7 +544,6 @@ class FusionWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(str, float)  # output_path, elapsed_time
     error = pyqtSignal(str)
-    resolved_channel = pyqtSignal(int)  # channel auto-pick resolved to (for the 'Auto' label)
 
     def __init__(
         self,
@@ -680,8 +676,6 @@ class FusionWorker(QThread):
             tf.enable_distortion_correction = self.enable_distortion
             load_time = time.time() - step_start
             self.progress.emit(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each) [{load_time:.1f}s]")
-            # Surface the resolved channel so the 'Auto' dropdown can show the pick.
-            self.resolved_channel.emit(int(tf.channel_to_use))
 
             # Auto-compute blend_pixels from tile overlap if requested
             if self.blend_pixels is None:
@@ -1824,9 +1818,12 @@ class StitcherGUI(QMainWindow):
             self.reg_channel_combo.setVisible(has_multi_channel)
             if has_multi_channel:
                 self.reg_channel_combo.clear()
-                # "Auto" (index 0) lets the pipeline pick the highest-tissue-contrast
-                # channel per dataset; the named channels below are manual overrides.
-                self.reg_channel_combo.addItems(["Auto"] + list(self.dataset_channel_names))
+                # Index 0 is a non-selectable prompt: there is no automatic channel pick
+                # (an unreliable guess can misalign the mosaic), so the operator must
+                # choose the registration channel explicitly before running.
+                self.reg_channel_combo.addItems(
+                    ["— Select channel —"] + list(self.dataset_channel_names)
+                )
                 self.reg_channel_combo.setCurrentIndex(0)
 
     def on_blend_toggled(self, checked):
@@ -2081,6 +2078,9 @@ class StitcherGUI(QMainWindow):
         if not self.drop_area.file_path:
             return
 
+        if not self._registration_channel_ready():
+            return
+
         if self._flatfield_in_progress():
             self.log("Waiting for flatfield calculation to finish...")
             self.run_button.setEnabled(False)
@@ -2123,29 +2123,36 @@ class StitcherGUI(QMainWindow):
             self._run_single(blend_pixels, fusion_mode, flatfield, darkfield)
 
     def _selected_registration_channel(self):
-        """Registration channel from the combo, or None for 'Auto' (let the pipeline
-        auto-pick by tissue contrast). Combo index 0 is 'Auto'; named channels follow.
-        Single-channel datasets also return None (auto trivially resolves to channel 0).
+        """Registration channel from the combo, or None if no channel is chosen yet.
+
+        Combo index 0 is the non-selectable "— Select channel —" prompt (there is no
+        auto-pick); named channels follow. Single-channel datasets resolve trivially to
+        channel 0 in the pipeline, so None here is fine for them.
         """
         if self.dataset_n_channels <= 1:
             return None
         idx = self.reg_channel_combo.currentIndex()
         return None if idx <= 0 else idx - 1
 
-    def _on_resolved_channel(self, ch):
-        """Relabel the combo's 'Auto' entry (index 0) to show which channel the
-        pipeline auto-picked, e.g. 'Auto (DAPI)'. Only the display text changes;
-        index 0 still maps to None in _selected_registration_channel, so the
-        auto-pick behaviour is untouched. Resets to plain 'Auto' on dataset reload
-        (the combo is repopulated there).
+    def _registration_channel_ready(self) -> bool:
+        """Gate a run on an explicit registration-channel choice.
+
+        We do not auto-pick the registration channel (an unreliable guess can silently
+        misalign the whole mosaic), so for a multi-channel dataset with registration
+        enabled the operator must choose one first. Logs a prompt and returns False if
+        not; otherwise True.
         """
-        if self.reg_channel_combo.count() == 0:
-            return
-        if 0 <= ch < len(self.dataset_channel_names):
-            name = self.dataset_channel_names[ch]
-        else:
-            name = f"channel {ch}"
-        self.reg_channel_combo.setItemText(0, f"Auto ({name})")
+        if not self.registration_checkbox.isChecked():
+            return True
+        if self.dataset_n_channels <= 1:
+            return True
+        if self._selected_registration_channel() is None:
+            self.log(
+                "⚠ Please select a channel for registration (Registration → Channel) "
+                "before running — there is no automatic channel pick."
+            )
+            return False
+        return True
 
     def _run_single(self, blend_pixels, fusion_mode, flatfield, darkfield):
         # Get registration z/t values (None means use default middle z)
@@ -2170,7 +2177,6 @@ class StitcherGUI(QMainWindow):
         self.worker.progress.connect(self.log)
         self.worker.finished.connect(self.on_fusion_finished)
         self.worker.error.connect(self.on_fusion_error)
-        self.worker.resolved_channel.connect(self._on_resolved_channel)
         self.worker.start()
 
     def _run_batch(self, blend_pixels, fusion_mode, flatfield, darkfield):
@@ -2266,6 +2272,9 @@ class StitcherGUI(QMainWindow):
         if not self.drop_area.file_path:
             return
 
+        if not self._registration_channel_ready():
+            return
+
         if self._flatfield_in_progress():
             self.log("Waiting for flatfield calculation to finish...")
             self.run_button.setEnabled(False)
@@ -2312,7 +2321,6 @@ class StitcherGUI(QMainWindow):
         self.preview_worker.progress.connect(self.log)
         self.preview_worker.finished.connect(self.on_preview_finished)
         self.preview_worker.error.connect(self.on_preview_error)
-        self.preview_worker.resolved_channel.connect(self._on_resolved_channel)
         self.preview_worker.start()
 
     def on_preview_finished(self, color_before, color_after, fused):

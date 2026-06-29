@@ -251,81 +251,27 @@ class TileFusion:
         self.multiscale_downsample = multiscale_downsample
 
     def _resolve_registration_channel(self) -> None:
-        """Resolve the registration channel: auto-pick from tissue structure when the
-        caller did not set one (channel_to_use is None), else validate and keep the
-        caller's explicit choice (the manual override)."""
+        """Validate the registration channel.
+
+        We deliberately do NOT auto-pick a registration channel. Contrast/entropy proxies
+        do not reliably identify the best-registering channel across datasets (validated:
+        no single metric picks the optimum on Codex; std alone picks a saturated, useless
+        channel on brightfield), so an automatic guess can silently misalign the whole
+        mosaic. Following ASHLAR's `--align-channel`, the channel is the operator's choice.
+
+        Single-channel datasets resolve trivially to 0. For multi-channel datasets the
+        caller must pass channel_to_use; if it is left None the requirement is enforced at
+        registration time (refine_tile_positions_with_cross_correlation), so metadata-only
+        uses of TileFusion still work without a channel.
+        """
         if self.channel_to_use is None:
-            self.channel_to_use = self._auto_pick_channel()
-        elif not (0 <= self.channel_to_use < self.channels):
+            if self.channels == 1:
+                self.channel_to_use = 0
+            return  # multi-channel: defer the requirement to registration time
+        if not (0 <= self.channel_to_use < self.channels):
             raise ValueError(
                 f"channel_to_use={self.channel_to_use} out of range [0, {self.channels})"
             )
-
-    def _auto_pick_channel(self, n_sample: int = 6, crop: int = 512) -> int:
-        """Pick the registration channel with the most tissue structure, per dataset.
-
-        Tissue structure is scored by intensity contrast (std) over a central crop of a
-        sample of tiles, DOWN-WEIGHTED BY SATURATION. std was validated across datasets
-        (RNAScope, 10x mouse brain) to track registration quality; raw high-frequency /
-        spectral-flatness metrics are deliberately NOT used because they reward noise
-        (they picked the worst, signal-poor channel).
-
-        Saturation matters for brightfield: a blown-out channel has HIGH std (clipping
-        widens the histogram) yet NO recoverable gradient texture in the seam overlaps,
-        so plain std picks it and registration fails (the S5 case: std picked the
-        saturated channel, NCC ~0.009, while the usable channel scored NCC ~0.16). We
-        multiply the std by (1 - fraction_saturated); for fluorescence (~no clipping) the
-        factor is ~1, so the pick is UNCHANGED -- the penalty only bites blown-out
-        channels. The pick is global to the dataset and overridden by channel_to_use.
-        """
-        if self.channels <= 1:
-            return 0
-        n = self.n_tiles
-        idxs = list(range(0, n, max(1, n // max(1, n_sample))))[:n_sample] or [0]
-        scores = np.zeros(self.channels, dtype=np.float64)
-        sat = np.zeros(self.channels, dtype=np.float64)
-        used = 0
-        cy, cx = self.Y // 2, self.X // 2
-        ys = slice(max(0, cy - crop), cy + crop)
-        xs = slice(max(0, cx - crop), cx + crop)
-        for k in idxs:
-            try:
-                tile = np.asarray(self._read_tile(k))
-            except Exception:
-                continue
-            if tile.ndim != 3 or tile.shape[0] != self.channels:
-                continue
-            # Saturation ceiling: the sensor max for integer dtypes (absolute, not
-            # relative -- a dim channel must not read as "saturated"); the observed max
-            # for floats.
-            if np.issubdtype(tile.dtype, np.integer):
-                ceiling = float(np.iinfo(tile.dtype).max)
-            else:
-                ceiling = float(tile.max()) or 1.0
-            used += 1
-            for c in range(self.channels):
-                patch = tile[c][ys, xs]
-                scores[c] += float(patch.std())
-                sat[c] += float((patch >= 0.99 * ceiling).mean())
-        if used == 0:
-            return 0
-        scores /= used
-        sat /= used
-        penalized = scores * (1.0 - sat)
-        pick = int(np.argmax(penalized))
-        order = np.argsort(penalized)[::-1]
-        spread = (penalized[order[0]] - penalized[order[-1]]) / (penalized[order[0]] + 1e-9)
-        print(
-            f"Auto-selected registration channel {pick} by saturation-weighted contrast "
-            f"(std={[round(float(s), 1) for s in scores]}, "
-            f"sat={[round(float(s), 3) for s in sat]})"
-        )
-        if spread < 0.05:
-            print(
-                "WARNING: channels have near-identical contrast; the registration-channel "
-                "choice is ambiguous -- consider setting channel_to_use explicitly."
-            )
-        return pick
 
     def _init_chunking(self) -> None:
         """Set the output chunk shape and its derived y/x sizes."""
@@ -698,6 +644,14 @@ class TileFusion:
             (Zarr, individual TIFFs, OME-TIFF tiles), disabled for single-file
             OME-TIFF (due to I/O contention).
         """
+        if self.channel_to_use is None:
+            raise ValueError(
+                "No registration channel selected. Pass channel_to_use "
+                f"(0..{self.channels - 1}) -- there is no automatic channel selection; "
+                "the registration channel is the operator's choice (cf. ASHLAR "
+                "--align-channel)."
+            )
+
         df = downsample_factors or self.downsample_factors
         sw = ssim_window or self.ssim_window
         self.pairwise_metrics.clear()
