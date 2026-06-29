@@ -474,3 +474,35 @@ def fuse_plane(
     if USING_GPU and cp is not None:
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
+
+
+def prewarm_numba() -> None:
+    """Trigger JIT compilation of the fusion kernels on a tiny synthetic plane.
+
+    numba compiles @njit(parallel=True) kernels on first call, at runtime -- so in a
+    frozen binary the first real fuse otherwise stalls a few seconds while LLVM compiles.
+    Running a tiny 2-tile fuse here (including a fractional origin, to compile the
+    sub-pixel/distorted accumulate path too) compiles them ahead of time. Best-effort:
+    any failure is swallowed -- it only affects startup latency, never correctness.
+    Call from a background thread at app startup.
+    """
+    try:
+        Y = X = 8
+        C = 1
+        tile = np.ones((C, Y, X), np.float32)
+        prof_y = np.ones(Y, np.float32)
+        prof_x = np.ones(X, np.float32)
+        fuse_plane(
+            read_tile=lambda i, z, t: tile,
+            write_block=lambda y0, y1, x0, x1, a: None,
+            get_field=lambda i: None,
+            origins=[(0.0, 0.0), (0.0, 5.5)],  # fractional -> warms the shifted path
+            padded_shape=(Y, X + 6),
+            tile_shape=(Y, X),
+            channels=C,
+            y_profile=prof_y,
+            x_profile=prof_x,
+            block_size=max(Y, X + 6),
+        )
+    except Exception:
+        pass

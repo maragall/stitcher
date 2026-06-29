@@ -2697,6 +2697,21 @@ def main():
     window = StitcherGUI()
     window.show()
 
+    # Pre-compile the numba fusion kernels in the background so the first stitch doesn't
+    # stall a few seconds on JIT compilation (most noticeable in the frozen binary).
+    # Daemon + best-effort: never blocks the UI, never affects correctness.
+    import threading
+
+    def _prewarm():
+        try:
+            from tilefusion.fusion import prewarm_numba
+
+            prewarm_numba()
+        except Exception:
+            pass
+
+    threading.Thread(target=_prewarm, name="numba-prewarm", daemon=True).start()
+
     sys.exit(app.exec_())
 
 

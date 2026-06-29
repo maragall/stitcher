@@ -15,7 +15,7 @@ jobs:
       - name: Set up Python 3.14
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.12"
 
       - name: Cache pip packages
         uses: actions/cache@v4
@@ -30,6 +30,7 @@ jobs:
           # Pin scipy/numpy at versions with cp wheels for the build Python.
           pip install "scipy>=1.13" "numpy>=2.0"
           pip install ".[gui]" matplotlib pyinstaller "napari[pyqt5]" napari-ome-zarr
+          echo "=== RESOLVED VERSIONS ===" && pip freeze
 
       - name: Validate gui/tilefusion signatures
         run: python installer/validate_signatures.py
