@@ -4,7 +4,44 @@ Shared utilities for tilefusion.
 GPU/CPU detection, array operations, and helper functions.
 """
 
+import logging
+from contextlib import contextmanager
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+# threadpoolctl lets us cap the BLAS (OpenBLAS/MKL) thread pool at RUNTIME -- env vars
+# like OPENBLAS_NUM_THREADS only take effect at BLAS init, too late once numpy is loaded.
+# Optional import: if it is unavailable (e.g. a frozen build that didn't bundle it) we
+# degrade to a no-op rather than crash; the only cost is the un-pinned behaviour.
+try:
+    from threadpoolctl import threadpool_limits as _threadpool_limits
+except Exception:  # pragma: no cover - depends on environment
+    _threadpool_limits = None
+_warned_no_threadpoolctl = False
+
+
+@contextmanager
+def limit_blas_threads(n: int = 1):
+    """Cap BLAS threads to `n` within this block, then restore.
+
+    Use this around a ThreadPoolExecutor whose workers call numpy linear algebra.
+    Without it, each of W worker threads can spin up its own BLAS pool of ~ncores
+    threads, so W workers x ncores BLAS = oversubscription: the CPU pegs at 100% but
+    a large share of cycles is spent context-switching, not computing. Pinning BLAS to
+    1 thread per worker keeps total threads ~= W ~= cores -- full utilisation, no thrash.
+    (Leave BLAS multi-threaded for the SEQUENTIAL heavy ops, e.g. BaSiC, which want it.)
+    """
+    global _warned_no_threadpoolctl
+    if _threadpool_limits is None:
+        if not _warned_no_threadpoolctl:
+            logger.debug("threadpoolctl not available; BLAS threads not pinned in pools")
+            _warned_no_threadpoolctl = True
+        yield
+    else:
+        with _threadpool_limits(limits=n, user_api="blas"):
+            yield
 
 try:
     import cupy as cp

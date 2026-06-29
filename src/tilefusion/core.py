@@ -7,6 +7,7 @@ Main orchestration class that composes registration, fusion, optimization, and I
 import gc
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
@@ -74,8 +75,9 @@ class TileFusion:
         Downsampling factors for multiscale.
     resolution_multiples : sequence
         Resolution multipliers per scale level.
-    max_workers : int
-        Maximum parallel I/O workers.
+    max_workers : int, optional
+        Maximum parallel compute/I/O workers. Defaults to the logical CPU count.
+        BLAS is pinned to 1 thread inside the pools to avoid oversubscription.
     debug : bool
         If True, prints debug info.
     metrics_filename : str
@@ -101,7 +103,7 @@ class TileFusion:
             (8, 8),
             (16, 16),
         ),
-        max_workers: int = 8,
+        max_workers: Optional[int] = None,
         debug: bool = False,
         metrics_filename: str = "metrics.json",
         channel_to_use: Optional[int] = None,
@@ -238,7 +240,11 @@ class TileFusion:
         self.resolution_multiples = [
             r if hasattr(r, "__len__") else (r, r) for r in resolution_multiples
         ]
-        self._max_workers = int(max_workers)
+        # Default to one worker per logical core (BLAS is pinned to 1 thread inside the
+        # pools, so workers ~= cores is full utilisation without oversubscription). The
+        # pools further cap by the work count, and registration strips are small, so this
+        # stays memory-bounded.
+        self._max_workers = int(max_workers) if max_workers else (os.cpu_count() or 8)
         self._debug = bool(debug)
         self.metrics_filename = metrics_filename
         self._blend_pixels = tuple(blend_pixels)

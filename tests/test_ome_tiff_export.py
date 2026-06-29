@@ -45,6 +45,16 @@ def test_2d_and_5d_shapes(tmp_path):
         assert tf.series[0].axes.replace("Q", "") in ("TZCYX", "ZCYX", "CYX")
 
 
+def test_time_increment_for_squid_parity(tmp_path):
+    # Squid's writer records the time-lapse interval as TimeIncrement (s), not PhysicalSizeT.
+    a = (np.random.default_rng(7).random((300, 300)) * 100).astype(np.uint16)
+    out = tmp_path / "t.ome.tif"
+    write_ome_tiff(a, str(out), pixel_size_um=(0.5, 0.5), time_increment_s=1.5, tile=(256, 256))
+    with tifffile.TiffFile(out) as tf:
+        xml = tf.ome_metadata
+    assert 'TimeIncrement="1.5"' in xml and 'TimeIncrementUnit="s"' in xml
+
+
 def test_export_zarr_to_ome_tiff_reads_pixel_size_from_ngff(tmp_path):
     """The button path: open scale0/image and pick PhysicalSize up from the NGFF
     metadata, so the caller doesn't have to thread pixel size through."""

@@ -16,6 +16,7 @@ from tqdm import tqdm
 from .utils import (
     USING_GPU,
     block_reduce,
+    limit_blas_threads,
     match_histograms,
     phase_cross_correlation,
     shift_array,
@@ -301,7 +302,10 @@ def register_pairs_batched(
         ]
 
         desc = f"register {batch_idx+1}/{n_batches}"
-        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        # Pin BLAS to 1 thread per worker: each worker calls numpy linalg (corrcoef,
+        # etc.), and W workers x ncores BLAS would oversubscribe the CPU. The I/O pool
+        # above is pure disk reads (no BLAS), so it is not pinned.
+        with limit_blas_threads(1), ThreadPoolExecutor(max_workers=n_workers) as executor:
             results = list(
                 tqdm(
                     executor.map(register_pair_worker, work_items),

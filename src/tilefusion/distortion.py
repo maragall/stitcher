@@ -33,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from scipy.ndimage import shift as ndi_shift
 
-from .utils import phase_cross_correlation
+from .utils import limit_blas_threads, phase_cross_correlation
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +198,10 @@ def build_seam_corrections(tf, n_blocks=_N_BLOCKS, ncc_min=_NCC_MIN):
     Y, X = tf.Y, tf.X
     pairs = list(tf.pairwise_metrics.keys())
     workers = max(1, int(getattr(tf, "max_workers", 8)))
-    with ThreadPoolExecutor(max_workers=workers) as ex:
+    # Each worker block-registers a seam (phase-correlation) and fits a polynomial
+    # (numpy linalg). Pin BLAS to 1 thread per worker so W workers don't each spawn a
+    # full BLAS pool and oversubscribe the CPU.
+    with limit_blas_threads(1), ThreadPoolExecutor(max_workers=workers) as ex:
         fits = list(ex.map(
             lambda p: (p, _fit_seam(tf, p[0], p[1], ps, pos, Y, X, n_blocks, ncc_min)),
             pairs,

@@ -38,7 +38,7 @@ class _TensorStoreArray:
 
 
 def export_zarr_to_ome_tiff(zarr_dir, pixel_size_um=None, channel_names=None,
-                            tif_path=None):
+                            tif_path=None, time_increment_s=None):
     """Build a Squid-style OME-TIFF from an already-written fused Zarr tree, on demand.
 
     Re-opens the full-res scale0 array from disk (so it is correct even after the
@@ -72,7 +72,8 @@ def export_zarr_to_ome_tiff(zarr_dir, pixel_size_um=None, channel_names=None,
         base = z[: -len(".ome.zarr")] if z.endswith(".ome.zarr") else z
         tif_path = base + ".ome.tif"
     write_ome_tiff(_TensorStoreArray(store), tif_path,
-                   pixel_size_um=pixel_size_um, channel_names=channel_names)
+                   pixel_size_um=pixel_size_um, channel_names=channel_names,
+                   time_increment_s=time_increment_s)
     return tif_path
 
 _UM = "µm"  # OME unit string Squid uses for PhysicalSize*Unit
@@ -103,7 +104,8 @@ def _read_plane(array, ndim, t, c, z):
 
 
 def write_ome_tiff(array, output_path, pixel_size_um=(1.0, 1.0), z_step_um=None,
-                   channel_names=None, tile=(1024, 1024), creator="tilefusion"):
+                   time_increment_s=None, channel_names=None, tile=(1024, 1024),
+                   creator="tilefusion"):
     """Stream `array` (zarr-like, 2D/3D-CYX/5D-TCZYX) to a tiled BigTIFF OME-TIFF.
 
     pixel_size_um : (y_um, x_um) physical pixel size.
@@ -130,6 +132,10 @@ def write_ome_tiff(array, output_path, pixel_size_um=(1.0, 1.0), z_step_um=None,
     }
     if z_step_um is not None:
         meta["PhysicalSizeZ"] = float(z_step_um); meta["PhysicalSizeZUnit"] = _UM
+    # Squid's writer records the time-lapse interval as TimeIncrement (seconds), not a
+    # PhysicalSizeT; match it for full OME parity when a Δt is known.
+    if time_increment_s is not None:
+        meta["TimeIncrement"] = float(time_increment_s); meta["TimeIncrementUnit"] = "s"
 
     n_tiles_x = (X + tw - 1) // tw
     n_tiles_y = (Y + th - 1) // th
