@@ -502,7 +502,18 @@ def _run_fusion_pipeline(
 
     mode_label = "direct placement" if fusion_mode == "direct" else "blended"
     log(f"Fusing tiles ({mode_label})...")
+    # Explicit per-block counter (platform-independent), throttled to ~5% steps.
+    _last_pct = {"v": -5}
+
+    def _fuse_progress(block_idx, total_blocks):
+        pct = int(100 * block_idx / max(total_blocks, 1))
+        if pct >= _last_pct["v"] + 5 or block_idx == total_blocks:
+            _last_pct["v"] = pct
+            log(f"Fusing block {block_idx}/{total_blocks} ({pct}%)")
+
+    tf.progress_callback = _fuse_progress
     tf._fuse_tiles(mode=fusion_mode)
+    tf.progress_callback = None
     fuse_time = time.time() - step_start
     log(f"Tiles fused [{fuse_time:.1f}s]")
 
@@ -773,11 +784,23 @@ class FusionWorker(QThread):
                 scale0.parent.mkdir(parents=True, exist_ok=True)
                 tf._create_fused_tensorstore(output_path=scale0)
 
-                # Fuse
+                # Fuse. Use an explicit per-block callback (not tqdm scraping) so the
+                # live counter shows identically on Linux and macOS; throttle to a few
+                # percent so large mosaics don't flood the log.
                 mode_label = "direct placement" if self.fusion_mode == "direct" else "blended"
                 self.progress.emit(f"Fusing tiles ({mode_label})...")
+                _last_pct = {"v": -5}
+
+                def _fuse_progress(block_idx, total_blocks):
+                    pct = int(100 * block_idx / max(total_blocks, 1))
+                    if pct >= _last_pct["v"] + 5 or block_idx == total_blocks:
+                        _last_pct["v"] = pct
+                        self.progress.emit(f"Fusing block {block_idx}/{total_blocks} ({pct}%)")
+
+                tf.progress_callback = _fuse_progress
                 with self._tqdm_context():
                     tf._fuse_tiles(mode=self.fusion_mode)
+                tf.progress_callback = None
                 fuse_time = time.time() - step_start
                 self.progress.emit(f"Tiles fused [{fuse_time:.1f}s]")
 

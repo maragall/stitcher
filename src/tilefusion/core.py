@@ -979,6 +979,7 @@ class TileFusion:
             z_level=z_level,
             time_idx=time_idx,
             show_progress=(self.n_t == 1 and self.n_z == 1),
+            progress_callback=getattr(self, "progress_callback", None),
         )
 
     def _fuse_tiles_chunked_plane(self, z_level: int = 0, time_idx: int = 0) -> None:
