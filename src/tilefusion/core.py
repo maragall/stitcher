@@ -269,17 +269,25 @@ class TileFusion:
         """Pick the registration channel with the most tissue structure, per dataset.
 
         Tissue structure is scored by intensity contrast (std) over a central crop of a
-        sample of tiles. std was validated across datasets (RNAScope, 10x mouse brain)
-        to track registration quality and reliably reject the worst channel; raw
-        high-frequency / spectral-flatness metrics are deliberately NOT used because they
-        reward noise (they picked the worst, signal-poor channel). The pick is global to
-        the dataset and is overridden by an explicit channel_to_use.
+        sample of tiles, DOWN-WEIGHTED BY SATURATION. std was validated across datasets
+        (RNAScope, 10x mouse brain) to track registration quality; raw high-frequency /
+        spectral-flatness metrics are deliberately NOT used because they reward noise
+        (they picked the worst, signal-poor channel).
+
+        Saturation matters for brightfield: a blown-out channel has HIGH std (clipping
+        widens the histogram) yet NO recoverable gradient texture in the seam overlaps,
+        so plain std picks it and registration fails (the S5 case: std picked the
+        saturated channel, NCC ~0.009, while the usable channel scored NCC ~0.16). We
+        multiply the std by (1 - fraction_saturated); for fluorescence (~no clipping) the
+        factor is ~1, so the pick is UNCHANGED -- the penalty only bites blown-out
+        channels. The pick is global to the dataset and overridden by channel_to_use.
         """
         if self.channels <= 1:
             return 0
         n = self.n_tiles
         idxs = list(range(0, n, max(1, n // max(1, n_sample))))[:n_sample] or [0]
         scores = np.zeros(self.channels, dtype=np.float64)
+        sat = np.zeros(self.channels, dtype=np.float64)
         used = 0
         cy, cx = self.Y // 2, self.X // 2
         ys = slice(max(0, cy - crop), cy + crop)
@@ -291,18 +299,30 @@ class TileFusion:
                 continue
             if tile.ndim != 3 or tile.shape[0] != self.channels:
                 continue
+            # Saturation ceiling: the sensor max for integer dtypes (absolute, not
+            # relative -- a dim channel must not read as "saturated"); the observed max
+            # for floats.
+            if np.issubdtype(tile.dtype, np.integer):
+                ceiling = float(np.iinfo(tile.dtype).max)
+            else:
+                ceiling = float(tile.max()) or 1.0
             used += 1
             for c in range(self.channels):
-                scores[c] += float(tile[c][ys, xs].std())
+                patch = tile[c][ys, xs]
+                scores[c] += float(patch.std())
+                sat[c] += float((patch >= 0.99 * ceiling).mean())
         if used == 0:
             return 0
         scores /= used
-        pick = int(np.argmax(scores))
-        order = np.argsort(scores)[::-1]
-        spread = (scores[order[0]] - scores[order[-1]]) / (scores[order[0]] + 1e-9)
+        sat /= used
+        penalized = scores * (1.0 - sat)
+        pick = int(np.argmax(penalized))
+        order = np.argsort(penalized)[::-1]
+        spread = (penalized[order[0]] - penalized[order[-1]]) / (penalized[order[0]] + 1e-9)
         print(
-            f"Auto-selected registration channel {pick} by tissue contrast "
-            f"(per-channel std over {used} tiles: {[round(float(s), 1) for s in scores]})"
+            f"Auto-selected registration channel {pick} by saturation-weighted contrast "
+            f"(std={[round(float(s), 1) for s in scores]}, "
+            f"sat={[round(float(s), 3) for s in sat]})"
         )
         if spread < 0.05:
             print(
