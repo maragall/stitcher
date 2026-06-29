@@ -11,7 +11,6 @@ from multiprocessing import cpu_count
 from typing import Any, Callable, Dict, List, Tuple, Union
 
 import numpy as np
-from scipy.ndimage import gaussian_laplace
 from tqdm import tqdm
 
 from .utils import (
@@ -30,8 +29,6 @@ logger = logging.getLogger(__name__)
 
 # Shared phase correlation parameters — used in both parallel and sequential paths
 _UPSAMPLE_FACTOR = 20  # 0.05-px subpixel grid. Swept on the golden fixture: 10->20
-_LOG_SIGMA = 1.5  # Laplacian-of-Gaussian sigma for the brightfield prefilter (px, on the
-# downsampled registration patches). Validated on S5 brightfield (NCC 0.55->0.84).
 # nearly halves the worst pairwise error (0.085->0.043 px); beyond 20 hits the noise
 # floor with no further gain. Sub-pixel accuracy ALSO requires registering at full
 # resolution (downsample_factors=(1,1)); any downsample coarsens the recovered shift.
@@ -44,19 +41,14 @@ def register_pair_worker(args: Tuple) -> Tuple:
     Parameters
     ----------
     args : tuple
-        (i_pos, j_pos, patch_i, patch_j, df, sw, max_shift, prefilter)
+        (i_pos, j_pos, patch_i, patch_j, df, sw, max_shift)
 
     Returns
     -------
     tuple
         (i_pos, j_pos, dy_s, dx_s, score) or (i_pos, j_pos, None, None, None) on failure
     """
-    # Accept the legacy 7-tuple (no prefilter) as well as the 8-tuple.
-    if len(args) == 8:
-        i_pos, j_pos, patch_i, patch_j, df, sw, max_shift, prefilter = args
-    else:
-        i_pos, j_pos, patch_i, patch_j, df, sw, max_shift = args
-        prefilter = None
+    i_pos, j_pos, patch_i, patch_j, df, sw, max_shift = args
 
     try:
         # Downsample, then run the SHARED kernel (register_and_score) so the batched
@@ -67,7 +59,7 @@ def register_pair_worker(args: Tuple) -> Tuple:
         g1 = block_reduce(patch_i, reduce_block, np.mean)
         g2 = block_reduce(patch_j, reduce_block, np.mean)
 
-        shift, ssim_val = register_and_score(g1, g2, win_size=sw, prefilter=prefilter)
+        shift, ssim_val = register_and_score(g1, g2, win_size=sw)
         if shift is None:
             return (i_pos, j_pos, None, None, None)
 
@@ -99,7 +91,6 @@ def register_and_score(
     g2: Any,
     win_size: int,
     debug: bool = False,
-    prefilter: str = None,
 ) -> Union[Tuple[Tuple[float, float], float], Tuple[None, None]]:
     """
     Histogram-match g2->g1, compute the subpixel shift, and score the lock by NCC.
@@ -113,13 +104,6 @@ def register_and_score(
         confidence score is normalized cross-correlation.
     debug : bool
         If True, print intermediate info.
-    prefilter : str, optional
-        If "log", estimate the shift from Laplacian-of-Gaussian-filtered images
-        (ASHLAR-style decorrelation). This sharpens the phase-correlation peak on
-        low-frequency-dominated data -- validated on brightfield: median seam NCC
-        0.55->0.84. The NCC SCORE is always computed on the original (unfiltered)
-        intensities, so it stays comparable across modes. Default (None) leaves the
-        validated fluorescence path untouched.
 
     Returns
     -------
@@ -136,17 +120,9 @@ def register_and_score(
         arr2 = arr2[0]
 
     arr2 = match_histograms(arr2, arr1)
-    # The shift is estimated from `src1`/`src2`; for the LoG prefilter those are the
-    # decorrelated images, but the alignment score below always uses the originals.
-    if prefilter == "log":
-        f1 = gaussian_laplace(to_numpy(arr1).astype(np.float32), _LOG_SIGMA)
-        f2 = gaussian_laplace(to_numpy(arr2).astype(np.float32), _LOG_SIGMA)
-        src1, src2 = xp.asarray(f1), xp.asarray(f2)
-    else:
-        src1, src2 = arr1, arr2
     shift, _, _ = phase_cross_correlation(
-        src1,
-        src2,
+        arr1,
+        arr2,
         disambiguate=True,
         normalization="phase",
         upsample_factor=_UPSAMPLE_FACTOR,
@@ -275,7 +251,6 @@ def register_pairs_batched(
     max_workers: int,
     *,
     debug: bool = False,
-    prefilter: str = None,
 ) -> Dict[Tuple[int, int], Tuple[int, int, float]]:
     """Register tile pairs in bounded-memory batches over a CPU compute pool.
 
@@ -324,9 +299,7 @@ def register_pairs_batched(
             patches = list(io_executor.map(read_pair_patches, batch))
 
         work_items = [
-            (i, j, pi, pj, df, sw, max_shift, prefilter)
-            for i, j, pi, pj in patches
-            if pi is not None
+            (i, j, pi, pj, df, sw, max_shift) for i, j, pi, pj in patches if pi is not None
         ]
 
         desc = f"register {batch_idx+1}/{n_batches}"
@@ -361,7 +334,6 @@ def register_pairs_readahead(
     max_shift: Tuple[int, int],
     *,
     debug: bool = False,
-    prefilter: str = None,
 ) -> Dict[Tuple[int, int], Tuple[int, int, float]]:
     """Register tile pairs one at a time, reading each pair's two patches concurrently
     via a 2-worker read-ahead pool. Used for the GPU path and small datasets."""
@@ -395,9 +367,7 @@ def register_pairs_readahead(
         g2 = block_reduce(arr_j, reduce_block, xp.mean)
 
         try:
-            shift_ds, ssim_val = register_and_score(
-                g1, g2, win_size=sw, debug=debug, prefilter=prefilter
-            )
+            shift_ds, ssim_val = register_and_score(g1, g2, win_size=sw, debug=debug)
         except Exception as e:
             logger.warning("Registration failed for (%d, %d): %s", i_pos, j_pos, e)
             continue
