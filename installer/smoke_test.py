@@ -123,54 +123,23 @@ def run():
         import napari  # noqa: F401
         from napari.viewer import Viewer  # noqa: F401
 
-    def t_napari_vispy_canvas_resized():
+    def t_napari_frozen_safe_version():
         # Guards the reported crash: napari.Viewer() dying with "'CanvasBackendDesktop'
-        # object has no attribute 'resized'". napari connects to vispy's
-        # canvas.native.resized (a QOpenGLWidget signal); if the frozen binary's vispy
-        # falls back to the legacy PyQt5.QtOpenGL.QGLWidget (as it did on Python 3.12 /
-        # vispy 0.16.2) that signal is absent and Viewer construction dies. Assert vispy's
-        # pyqt5 backend resolves the modern QOpenGLWidget -- GL-free (no rendering context;
-        # constructing a Viewer hangs headlessly).
-        import sys
+        # object has no attribute 'resized'". The binaries FORCE vispy's legacy QGLWidget
+        # on Linux/Windows (VISPY_USE_LEGACY_QGLWIDGET=1 for the Blackwell-GPU workaround),
+        # and that widget has no 'resized' signal. napari 0.7.x connects to
+        # canvas.native.resized and crashes; napari 0.6.x uses its own
+        # _welcome_widget.resized and is fine. So the shipped napari MUST be <0.7. Assert
+        # it -- GL-free (napari metadata is bundled; constructing a Viewer hangs
+        # headlessly). Belt-and-suspenders with the pyproject <0.7 cap.
+        from importlib.metadata import version
 
-        import vispy.app
+        from packaging.version import Version
 
-        # --- diagnostics: WHY does the frozen binary pick the legacy widget? ---
-        try:
-            from PyQt5.QtCore import QT_VERSION_STR, PYQT_VERSION_STR
-
-            print(f"    [diag] QT_VERSION_STR={QT_VERSION_STR!r} PYQT={PYQT_VERSION_STR!r}")
-        except Exception as e:
-            print(f"    [diag] PyQt5.QtCore version import FAILED: {e!r}")
-        try:
-            from packaging.version import Version
-
-            print(f"    [diag] Version(QT)>=5.4.0 -> {Version(QT_VERSION_STR) >= Version('5.4.0')}")
-        except Exception as e:
-            print(f"    [diag] packaging Version check FAILED: {e!r}")
-        try:
-            from PyQt5.QtWidgets import QOpenGLWidget  # noqa: F401
-
-            print("    [diag] PyQt5.QtWidgets.QOpenGLWidget import: OK")
-        except Exception as e:
-            print(f"    [diag] PyQt5.QtWidgets.QOpenGLWidget import FAILED: {e!r}")
-        try:
-            from vispy.util.config import config
-
-            print(f"    [diag] vispy gl_backend={config.get('gl_backend')!r}")
-        except Exception as e:
-            print(f"    [diag] vispy config read FAILED: {e!r}")
-
-        vispy.app.use_app("pyqt5")
-        qtmod = sys.modules["vispy.app.backends._qt"]
-        base = qtmod.QGLWidget
-        print(
-            f"    [diag] vispy QGLWidget={base!r} USE_EGL={getattr(qtmod, 'USE_EGL', '?')} "
-            f"QT5_NEW_API={getattr(qtmod, 'QT5_NEW_API', '?')}"
-        )
-        assert base is not object and hasattr(base, "resized"), (
-            f"vispy Qt canvas base {base!r} lacks the 'resized' signal "
-            "(legacy QGLWidget / EGL fallback) -- napari.Viewer() would crash"
+        v = version("napari")
+        assert Version(v) < Version("0.7"), (
+            f"napari {v} >= 0.7 uses vispy canvas.native.resized, which the forced legacy "
+            "QGLWidget lacks -> napari.Viewer() crashes in the frozen binary; pin napari <0.7"
         )
 
     tests = [
@@ -185,7 +154,7 @@ def run():
         ("import pandas", t_pandas),
         ("PyQt5 QApplication", t_pyqt5),
         ("napari viewer import", t_napari),
-        ("vispy Qt canvas has resized (QOpenGLWidget)", t_napari_vispy_canvas_resized),
+        ("napari <0.7 (works with forced legacy QGLWidget)", t_napari_frozen_safe_version),
         ("import tilefusion + modules", t_tilefusion),
         ("threadpoolctl BLAS limiter", t_threadpoolctl),
     ]

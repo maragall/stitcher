@@ -34,6 +34,12 @@ import sys
 # years ago and the modern macOS Qt build renders it to a context that
 # gives a blank white canvas. Macs don't ship Blackwell GPUs anyway.
 # Must be set BEFORE vispy imports.
+#
+# COUPLING: the legacy QGLWidget has NO 'resized' signal. napari 0.7.x connects to
+# canvas.native.resized and crashes here ("'CanvasBackendDesktop' has no attribute
+# 'resized'"); napari 0.6.x uses its own _welcome_widget.resized and is fine. So while
+# this workaround is on, napari MUST stay <0.7 (capped in pyproject; asserted in
+# installer/smoke_test.py). Don't bump napari past 0.7 without also removing this.
 if sys.platform != "darwin":
     os.environ.setdefault("VISPY_USE_LEGACY_QGLWIDGET", "1")
 

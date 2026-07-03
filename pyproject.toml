@@ -53,10 +53,13 @@ gpu = [
 ]
 gui = [
     "PyQt5>=5.15",
-    # Exact GUI-stack versions are pinned for the binaries in installer/constraints.txt
-    # (napari 0.7.0 + vispy 0.16.1 -- the last stable pair; a later vispy 0.16.2 bump
-    # broke napari.Viewer() in the frozen binaries).
-    "napari>=0.4.18",
+    # napari MUST stay <0.7: the frozen Linux/Windows binaries force vispy's legacy
+    # QGLWidget (VISPY_USE_LEGACY_QGLWIDGET=1 in installer/entry.py + patch_vispy_blackwell
+    # .py) to avoid QOpenGLWidget FBO corruption on NVIDIA Blackwell GPUs. That legacy
+    # widget has no 'resized' signal; napari 0.7.x connects to canvas.native.resized and
+    # crashes ("'CanvasBackendDesktop' has no attribute 'resized'"). napari 0.6.x uses its
+    # own _welcome_widget.resized and works with the legacy widget.
+    "napari>=0.4.18,<0.7",
     "ome-zarr>=0.8",
     "dask[array]>=2023.1",
 ]
