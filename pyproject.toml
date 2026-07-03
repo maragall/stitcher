@@ -53,9 +53,10 @@ gpu = [
 ]
 gui = [
     "PyQt5>=5.15",
-    # <0.7: napari 0.7.x connects to vispy's canvas.native.resized, which the frozen
-    # binaries' legacy QGLWidget lacks -> napari.Viewer() crashes. 0.6.x is frozen-safe.
-    "napari>=0.4.18,<0.7",
+    # Exact GUI-stack versions are pinned for the binaries in installer/constraints.txt
+    # (napari 0.7.0 + vispy 0.16.1 -- the last stable pair; a later vispy 0.16.2 bump
+    # broke napari.Viewer() in the frozen binaries).
+    "napari>=0.4.18",
     "ome-zarr>=0.8",
     "dask[array]>=2023.1",
 ]
