@@ -11,9 +11,13 @@
 # Windows; appnope/macholib on macOS; pexpect/ptyprocess on macOS+Linux). pip/setuptools/
 # wheel are build tooling, not pinned here.
 #
-# The napari<->vispy rendering combo that matters is locked here: napari + vispy pinned
-# to the pair that fixed the CanvasBackendDesktop "resized" error (napari 0.7.1 needs
-# vispy 0.16.2; the older 0.7.0/0.16.1 pairing raised AttributeError on canvas resize).
+# napari is pinned to 0.6.6 (with vispy 0.15.2), the last line that connects the activity
+# dialog to napari's OWN _welcome_widget.resized signal. napari 0.7.x switched to
+# vispy's canvas.native.resized, which requires the modern QOpenGLWidget -- but the
+# frozen Linux/Windows binaries resolve vispy's LEGACY PyQt5.QtOpenGL.QGLWidget (no
+# 'resized' signal), so napari.Viewer() died with "'CanvasBackendDesktop' object has no
+# attribute 'resized'". 0.6.6 is frozen-safe and still supports numpy 2.x / Python 3.12.
+# pyproject caps napari <0.7 so it can't silently jump back to the broken line.
 #
 # To refresh: bump inputs, let the builds print "=== RESOLVED VERSIONS ===", re-run this
 # agree-across-3-OSes derivation, and replace this file. Do NOT hand-write versions.
@@ -28,7 +32,7 @@ aiosignal==1.4.0
 altgraph==0.17.5
 annotated-doc==0.0.4
 annotated-types==0.7.0
-app-model==0.5.1
+app-model==0.4.0
 asttokens==3.0.1
 attrs==26.1.0
 botocore==1.43.0
@@ -78,7 +82,7 @@ matplotlib-inline==0.2.2
 mdurl==0.1.2
 ml_dtypes==0.5.4
 multidict==6.7.1
-napari==0.7.1
+napari==0.6.6
 napari-console==0.1.4
 napari-ome-zarr==0.8.2
 napari-plugin-engine==0.2.1
@@ -89,6 +93,7 @@ npe2==0.8.3
 numba==0.65.1
 numcodecs==0.16.5
 numpy==2.4.6
+numpydoc==1.10.0
 ome-zarr==0.18.0
 ome-zarr-models==1.7
 packaging==26.2
@@ -148,7 +153,7 @@ typer==0.26.8
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 urllib3==2.7.0
-vispy==0.16.2
+vispy==0.15.2
 wcwidth==0.8.2
 wrapt==2.2.2
 yarl==1.24.2

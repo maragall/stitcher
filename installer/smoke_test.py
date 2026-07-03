@@ -123,23 +123,22 @@ def run():
         import napari  # noqa: F401
         from napari.viewer import Viewer  # noqa: F401
 
-    def t_napari_vispy_canvas_resized():
-        # napari's main window connects to `canvas.native.resized` (a QOpenGLWidget
-        # signal). If vispy falls back to the legacy QGLWidget or the EGL `object` base
-        # -- which happens in a mis-bundled frozen app -- that signal is absent and
-        # napari.Viewer() dies with "'CanvasBackendDesktop' has no attribute 'resized'".
-        # Assert the modern QOpenGLWidget path is what the frozen binary actually resolves
-        # (GL-free -- no rendering context needed).
-        import sys
+    def t_napari_frozen_safe_version():
+        # Guards the reported crash: napari.Viewer() dying with "'CanvasBackendDesktop'
+        # object has no attribute 'resized'". napari 0.7.x connects to vispy's
+        # canvas.native.resized, which the frozen binaries' legacy QGLWidget lacks; the
+        # <0.7 line uses napari's own _welcome_widget.resized and is frozen-safe. Assert
+        # the shipped napari is <0.7 -- GL-free (metadata is bundled), no Viewer/GL
+        # context needed (constructing one hangs headlessly). Belt-and-suspenders with
+        # the pyproject <0.7 cap.
+        from importlib.metadata import version
 
-        import vispy.app
+        from packaging.version import Version
 
-        vispy.app.use_app("pyqt5")
-        qtmod = sys.modules["vispy.app.backends._qt"]
-        base = qtmod.QGLWidget
-        assert base is not object and hasattr(base, "resized"), (
-            f"vispy Qt canvas base {base!r} lacks the 'resized' signal "
-            "(legacy QGLWidget / EGL fallback) -- napari.Viewer() would crash"
+        v = version("napari")
+        assert Version(v) < Version("0.7"), (
+            f"napari {v} >= 0.7 connects to vispy canvas.native.resized -> "
+            "napari.Viewer() crashes in the frozen binary; pin napari <0.7"
         )
 
     tests = [
@@ -153,8 +152,8 @@ def run():
         ("skimage registration", t_skimage),
         ("import pandas", t_pandas),
         ("PyQt5 QApplication", t_pyqt5),
-        ("napari viewer", t_napari),
-        ("vispy Qt canvas has resized (QOpenGLWidget)", t_napari_vispy_canvas_resized),
+        ("napari viewer import", t_napari),
+        ("napari <0.7 (frozen-safe, no 'resized' crash)", t_napari_frozen_safe_version),
         ("import tilefusion + modules", t_tilefusion),
         ("threadpoolctl BLAS limiter", t_threadpoolctl),
     ]
