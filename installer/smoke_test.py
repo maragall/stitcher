@@ -123,6 +123,25 @@ def run():
         import napari  # noqa: F401
         from napari.viewer import Viewer  # noqa: F401
 
+    def t_napari_vispy_canvas_resized():
+        # napari's main window connects to `canvas.native.resized` (a QOpenGLWidget
+        # signal). If vispy falls back to the legacy QGLWidget or the EGL `object` base
+        # -- which happens in a mis-bundled frozen app -- that signal is absent and
+        # napari.Viewer() dies with "'CanvasBackendDesktop' has no attribute 'resized'".
+        # Assert the modern QOpenGLWidget path is what the frozen binary actually resolves
+        # (GL-free -- no rendering context needed).
+        import sys
+
+        import vispy.app
+
+        vispy.app.use_app("pyqt5")
+        qtmod = sys.modules["vispy.app.backends._qt"]
+        base = qtmod.QGLWidget
+        assert base is not object and hasattr(base, "resized"), (
+            f"vispy Qt canvas base {base!r} lacks the 'resized' signal "
+            "(legacy QGLWidget / EGL fallback) -- napari.Viewer() would crash"
+        )
+
     tests = [
         ("import numpy", t_numpy),
         ("scipy.ndimage zoom", t_scipy),
@@ -135,6 +154,7 @@ def run():
         ("import pandas", t_pandas),
         ("PyQt5 QApplication", t_pyqt5),
         ("napari viewer", t_napari),
+        ("vispy Qt canvas has resized (QOpenGLWidget)", t_napari_vispy_canvas_resized),
         ("import tilefusion + modules", t_tilefusion),
         ("threadpoolctl BLAS limiter", t_threadpoolctl),
     ]
