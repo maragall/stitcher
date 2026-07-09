@@ -19,6 +19,7 @@ For pathological cases (degenerate input) the estimator falls back to a unit fie
 (no correction); a flatfield computed offline can also be supplied via load_flatfield().
 """
 
+import pickle
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -501,6 +502,33 @@ def save_flatfield(
     np.save(path, data, allow_pickle=True)
 
 
+def _install_numpy_core_compat() -> None:
+    """Alias the numpy<2 module paths (numpy.core.*) onto numpy 2.x's numpy._core.*.
+
+    Flatfield .npy files pickled under numpy 1.x (e.g. older Squid acquisitions) reference
+    ``numpy.core.multiarray`` when unpickled. numpy 2.x renamed the package to
+    ``numpy._core`` and ships a thin ``numpy.core`` compat stub -- but a frozen
+    (PyInstaller) build often does NOT bundle that private stub, so the load fails with
+    "No module named 'numpy.core.multiarray'". Registering the aliases from
+    ``numpy._core`` (which is always present) makes allow_pickle loads of old files work,
+    regardless of whether the stub was bundled. Idempotent and best-effort.
+    """
+    import sys
+
+    try:
+        import numpy._core  # noqa: F401
+    except Exception:
+        return  # numpy < 2 (no _core) -- old paths already valid
+    for sub in ("", ".multiarray", ".umath", "._multiarray_umath", ".numeric", ".numerictypes"):
+        old, new = "numpy.core" + sub, "numpy._core" + sub
+        if old in sys.modules:
+            continue
+        try:
+            sys.modules[old] = __import__(new, fromlist=["_"])
+        except Exception:
+            pass
+
+
 def load_flatfield(path: Path) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """
     Load flatfield (and optionally darkfield) from a .npy file.
@@ -524,10 +552,19 @@ def load_flatfield(path: Path) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     ValueError
         If the file format is invalid (not a dictionary with 'flatfield' key).
     """
+    # Old flatfield files (numpy 1.x pickles, e.g. from Squid) reference numpy.core.* ,
+    # which numpy 2.x renamed to numpy._core; alias them so the load doesn't fail with
+    # "No module named 'numpy.core.multiarray'" (esp. in the frozen build).
+    _install_numpy_core_compat()
     try:
         loaded = np.load(path, allow_pickle=True)
     except OSError as exc:
         raise OSError(f"Cannot read flatfield file '{path}': {exc}") from exc
+    except (ModuleNotFoundError, ImportError, pickle.UnpicklingError) as exc:
+        raise ValueError(
+            f"Cannot unpickle flatfield file '{path}' (it may have been saved with an "
+            f"incompatible numpy version): {exc}"
+        ) from exc
 
     try:
         data = loaded.item()

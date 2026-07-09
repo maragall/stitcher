@@ -179,3 +179,64 @@ def test_median_estimator_still_available():
     ff, _ = estimate_flatfield_median(stack, use_darkfield=False)
     assert ff.shape == (128, 128)
     assert np.corrcoef(ff.ravel(), shading.ravel())[0, 1] > 0.95
+
+
+# --------------------------------------------------------------------------- #
+# numpy 1.x pickle compatibility: old flatfield .npy files (e.g. Squid) reference
+# numpy.core.multiarray, which numpy 2.x renamed to numpy._core (and a frozen app may
+# not bundle the compat stub) -> "No module named 'numpy.core.multiarray'".
+# --------------------------------------------------------------------------- #
+def test_numpy_core_compat_shim_registers_missing_module():
+    """Simulate the frozen app (numpy.core stub absent): the shim must re-register
+    numpy.core.multiarray -> numpy._core.multiarray, which is exactly what an old
+    pickle's find_class needs."""
+    import sys
+
+    import numpy._core
+
+    from tilefusion.flatfield import _install_numpy_core_compat
+
+    for m in [k for k in list(sys.modules) if k == "numpy.core" or k.startswith("numpy.core.")]:
+        del sys.modules[m]
+    _install_numpy_core_compat()
+    assert sys.modules.get("numpy.core") is numpy._core
+    assert sys.modules.get("numpy.core.multiarray") is numpy._core.multiarray
+
+
+def test_save_load_flatfield_roundtrip(tmp_path):
+    """save_flatfield -> load_flatfield roundtrip still works (the shim must not break
+    normal loads)."""
+    from tilefusion.flatfield import load_flatfield, save_flatfield
+
+    ff = np.random.default_rng(0).random((2, 8, 8)).astype(np.float32)
+    df = np.zeros((2, 8, 8), np.float32)
+    p = tmp_path / "ff.npy"
+    save_flatfield(p, ff, df)
+    ff2, df2 = load_flatfield(p)
+    assert np.array_equal(ff, ff2) and np.array_equal(df, df2)
+
+
+def test_load_flatfield_numpy_core_pickle(tmp_path):
+    """A flatfield .npy whose pickle references the numpy<2 module path
+    (numpy.core.multiarray) loads via the compat shim rather than raising."""
+    import pickle
+    import sys
+
+    from tilefusion.flatfield import load_flatfield
+
+    # Protocol-2 pickle uses newline-terminated GLOBAL opcodes, so rewriting the module
+    # ref numpy._core -> numpy.core (numpy-1.x style) is a safe byte replace.
+    payload = {"flatfield": np.ones((1, 4, 4), np.float32), "darkfield": None}
+    raw = pickle.dumps(payload, protocol=2).replace(b"numpy._core", b"numpy.core")
+    p = tmp_path / "old.npy"
+    # np.save-compatible container: a 0-d object array holding the (old-style) pickle.
+    arr = np.empty((), dtype=object)
+    arr[()] = pickle.loads(raw)  # loads here (dev has the stub); the file is what matters
+    # Write the old-style bytes directly as the object payload so load must use the shim.
+    with open(p, "wb") as f:
+        np.lib.format.write_array(f, arr, allow_pickle=True)
+    # simulate the frozen app: drop the numpy.core stub so only our shim can resolve it
+    for m in [k for k in list(sys.modules) if k == "numpy.core" or k.startswith("numpy.core.")]:
+        del sys.modules[m]
+    ff, df = load_flatfield(p)
+    assert ff.shape == (1, 4, 4) and df is None
