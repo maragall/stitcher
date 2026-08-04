@@ -405,10 +405,14 @@ def apply_flatfield(
     else:
         corrected = tile_f / flatfield_safe
 
-    # Clip to valid range for integer dtypes to avoid wraparound
+    # ROUND, then clip, for integer dtypes. The cast at the end truncates toward zero, so
+    # without the rint every corrected pixel loses its fractional part -- a systematic bias of
+    # about half a count DOWNWARD across the whole image, not a rounding wobble that averages
+    # out. Correcting a dim corner by /0.97 is meant to raise it; truncation hands most of that
+    # gain straight back. Clipping still guards the wraparound it always guarded.
     if np.issubdtype(tile.dtype, np.integer):
         info = np.iinfo(tile.dtype)
-        corrected = np.clip(corrected, info.min, info.max)
+        corrected = np.clip(np.rint(corrected), info.min, info.max)
 
     return corrected.astype(tile.dtype)
 
@@ -468,10 +472,12 @@ def apply_flatfield_region(
     else:
         corrected = region_f / ff_safe
 
-    # Clip to valid range for integer dtypes to avoid wraparound
+    # ROUND, then clip -- see apply_flatfield. This is the registration path (core reads its
+    # overlap strips through here), so the bias landed on the pixels the correlator sees, not
+    # just on the fused output.
     if np.issubdtype(region.dtype, np.integer):
         info = np.iinfo(region.dtype)
-        corrected = np.clip(corrected, info.min, info.max)
+        corrected = np.clip(np.rint(corrected), info.min, info.max)
 
     return corrected.astype(region.dtype)
 
