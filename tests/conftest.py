@@ -1,7 +1,19 @@
 """Pytest configuration and shared fixtures."""
 
-import numpy as np
-import pytest
+import os
+
+# The GUI is PyQt5-only, but qtpy (pulled in by the napari and pytest-qt plugins)
+# resolves to PySide6 when both are installed. Loading two Qt bindings into one
+# interpreter segfaults the moment a widget is constructed, which is what
+# tests/test_gui_wiring.py does. Pin the binding before anything imports qtpy so
+# the suite runs correctly with a bare `pytest`, not only when the caller
+# remembers to export QT_API. setdefault() still respects an explicit override.
+os.environ.setdefault("QT_API", "pyqt5")
+os.environ.setdefault("PYTEST_QT_API", "pyqt5")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import numpy as np  # noqa: E402
+import pytest  # noqa: E402
 
 
 @pytest.fixture

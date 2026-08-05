@@ -404,6 +404,30 @@ def _registration_qc(tf) -> str:
     return f"{locked} overlaps locked"
 
 
+def _auto_blend_pixels(tf):
+    """Blend width (y, x) auto-computed from the real seam overlap, or None.
+
+    Feather over ~2x the actual SEAM overlap. Each pair's overlap has one small
+    dimension (the real seam depth) and one full-tile dimension; take the small one.
+    A feather >= the overlap makes the inter-tile weight cross over GRADUALLY (each
+    pixel dominated by its nearer tile) instead of a flat 50/50 band -- which is what
+    stops a residual seam misalignment from reading as a doubled feature. overlap/2
+    (old) left a 50/50 plateau that ghosted; ~2x overlap is the convergence point
+    where wider stops helping. Capped to tile/2 by make_1d_profile.
+
+    Returns None when no adjacent pairs exist, so the caller can fall back.
+    """
+    from tilefusion.registration import find_adjacent_pairs
+
+    pairs = find_adjacent_pairs(tf._tile_positions, tf._pixel_size, (tf.Y, tf.X))
+    if not pairs:
+        return None
+    seam_overlaps = [min(p[4], p[5]) for p in pairs if min(p[4], p[5]) > 0]
+    seam = int(np.median(seam_overlaps)) if seam_overlaps else 50
+    b = max(seam * 2, 10)
+    return (b, b)
+
+
 def _run_fusion_pipeline(
     tiff_path,
     do_registration,
@@ -415,9 +439,16 @@ def _run_fusion_pipeline(
     registration_z=None,
     registration_t=0,
     registration_channel=None,
+    outlier_rel_thresh=0.5,
+    outlier_abs_thresh=2.0,
+    enable_distortion=True,
     log_fn=None,
 ):
     """Shared stitching pipeline used by both single and batch workers.
+
+    Every knob the GUI exposes has to arrive here explicitly. The outlier
+    thresholds and the distortion switch used to be hardcoded in this body, so
+    the batch path quietly ignored three controls the single path honoured.
 
     Returns the output path string. Raises on failure.
     """
@@ -451,7 +482,12 @@ def _run_fusion_pipeline(
     tf = TileFusion(
         tiff_path,
         output_path=output_path,
-        blend_pixels=blend_pixels,
+        # blend_pixels=None means "Auto" (the GUI default). TileFusion does
+        # tuple(blend_pixels) in its ctor, so passing None straight through raised
+        # TypeError before the run even started -- every batch item failed on the
+        # default settings. Seed with a placeholder, then auto-compute below once the
+        # tile geometry is known.
+        blend_pixels=blend_pixels or (50, 50),
         downsample_factors=(downsample_factor, downsample_factor),
         flatfield=flatfield,
         darkfield=darkfield,
@@ -459,8 +495,18 @@ def _run_fusion_pipeline(
         registration_t=registration_t,
         channel_to_use=registration_channel,
     )
+    tf.enable_distortion_correction = enable_distortion
     load_time = time.time() - step_start
     log(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X}) [{load_time:.1f}s]")
+
+    if blend_pixels is None:
+        auto = _auto_blend_pixels(tf)
+        if auto is None:
+            tf.blend_pixels = (50, 50)
+            log("No adjacent pairs detected — using default 50px blend")
+        else:
+            tf.blend_pixels = auto
+            log(f"Auto blend width: {auto[0]}px (Y), {auto[1]}px (X)")
 
     if len(tf._unique_regions) > 1:
         log(f"Multi-region dataset: {tf._unique_regions}")
@@ -479,7 +525,12 @@ def _run_fusion_pipeline(
 
     step_start = time.time()
     log("Optimizing positions...")
-    tf.optimize_shifts(method="TWO_ROUND_ITERATIVE", rel_thresh=0.5, abs_thresh=2.0, iterative=True)
+    tf.optimize_shifts(
+        method="TWO_ROUND_ITERATIVE",
+        rel_thresh=outlier_rel_thresh,
+        abs_thresh=outlier_abs_thresh,
+        iterative=True,
+    )
     gc.collect()
 
     tf._tile_positions = [
@@ -677,31 +728,21 @@ class FusionWorker(QThread):
             load_time = time.time() - step_start
             self.progress.emit(f"Loaded {tf.n_tiles} tiles ({tf.Y}x{tf.X} each) [{load_time:.1f}s]")
 
-            # Auto-compute blend_pixels from tile overlap if requested
+            # Auto-compute blend_pixels from tile overlap if requested. Keep the
+            # resolved value in a local: the per-region TileFusion below is a fresh
+            # object, and rebuilding it from self.blend_pixels (still None in Auto
+            # mode) silently threw the computed width away and fused every region at
+            # the 50px fallback.
+            resolved_blend = self.blend_pixels
             if self.blend_pixels is None:
-                from tilefusion.registration import find_adjacent_pairs
-
-                pairs = find_adjacent_pairs(tf._tile_positions, tf._pixel_size, (tf.Y, tf.X))
-                if pairs:
-                    # Feather over ~2x the actual SEAM overlap. Each pair's overlap has one
-                    # small dimension (the real seam depth) and one full-tile dimension; take
-                    # the small one. A feather >= the overlap makes the inter-tile weight
-                    # cross over GRADUALLY (each pixel dominated by its nearer tile) instead
-                    # of a flat 50/50 band -- which is what stops a residual seam misalignment
-                    # from reading as a doubled feature. overlap/2 (old) left a 50/50 plateau
-                    # that ghosted; ~2x overlap is the convergence point where wider stops
-                    # helping. Capped to tile/2 by make_1d_profile.
-                    seam_overlaps = [min(p[4], p[5]) for p in pairs if min(p[4], p[5]) > 0]
-                    seam = int(np.median(seam_overlaps)) if seam_overlaps else 50
-                    b = max(seam * 2, 10)
-                    blend_pixels = (b, b)
-                    tf.blend_pixels = blend_pixels
-                    self.progress.emit(
-                        f"Auto blend width: {blend_pixels[0]}px (Y), {blend_pixels[1]}px (X)"
-                    )
-                else:
-                    tf.blend_pixels = (50, 50)
+                auto = _auto_blend_pixels(tf)
+                if auto is None:
+                    resolved_blend = (50, 50)
                     self.progress.emit("No adjacent pairs detected — using default 50px blend")
+                else:
+                    resolved_blend = auto
+                    self.progress.emit(f"Auto blend width: {auto[0]}px (Y), {auto[1]}px (X)")
+                tf.blend_pixels = resolved_blend
 
             # Determine regions to process
             regions = tf._unique_regions if len(tf._unique_regions) > 1 else [None]
@@ -719,7 +760,7 @@ class FusionWorker(QThread):
                     tf = TileFusion(
                         self.tiff_path,
                         output_path=region_output,
-                        blend_pixels=self.blend_pixels or (50, 50),
+                        blend_pixels=resolved_blend or (50, 50),
                         downsample_factors=(self.downsample_factor, self.downsample_factor),
                         flatfield=self.flatfield,
                         darkfield=self.darkfield,
@@ -853,6 +894,12 @@ class BatchFusionWorker(QThread):
         fusion_mode="blended",
         flatfield=None,
         darkfield=None,
+        registration_z=None,
+        registration_t=0,
+        registration_channel=None,
+        outlier_rel_thresh=0.5,
+        outlier_abs_thresh=2.0,
+        enable_distortion=True,
     ):
         super().__init__()
         self.paths = paths
@@ -862,6 +909,17 @@ class BatchFusionWorker(QThread):
         self.fusion_mode = fusion_mode
         self.flatfield = flatfield
         self.darkfield = darkfield
+        # Batch must honour the same settings as a single run. These six used to stop
+        # at the GUI: the batch worker never accepted them, so the registration
+        # z/t/channel, both outlier thresholds and the distortion switch were silently
+        # replaced by defaults -- and on a multi-channel dataset the missing channel
+        # made every item fail outright ("No registration channel selected").
+        self.registration_z = registration_z
+        self.registration_t = registration_t
+        self.registration_channel = registration_channel
+        self.outlier_rel_thresh = outlier_rel_thresh
+        self.outlier_abs_thresh = outlier_abs_thresh
+        self.enable_distortion = enable_distortion
 
     def _log(self, index, total, name, message):
         self.progress.emit(f"[{index + 1}/{total} {name}] {message}")
@@ -899,6 +957,12 @@ class BatchFusionWorker(QThread):
                     self.fusion_mode,
                     flatfield=self.flatfield,
                     darkfield=self.darkfield,
+                    registration_z=self.registration_z,
+                    registration_t=self.registration_t,
+                    registration_channel=self.registration_channel,
+                    outlier_rel_thresh=self.outlier_rel_thresh,
+                    outlier_abs_thresh=self.outlier_abs_thresh,
+                    enable_distortion=self.enable_distortion,
                     log_fn=log_fn,
                 )
                 succeeded += 1
@@ -1033,7 +1097,11 @@ class DropArea(QFrame):
             self.setStyleSheet(self._warn_style)
         else:
             self.setStyleSheet(self._active_style)
-        self.icon_label.setText("✅")
+        # NB: there is no separate icon widget on this frame (only self.label), so the
+        # status glyph goes in the label text. Touching a non-existent self.icon_label
+        # here raised AttributeError inside dropEvent, which Qt swallows into a console
+        # traceback -- multi-drop looked like it did nothing and batch mode was
+        # unreachable through the only UI that offers it.
         self.label.setText(label_lines)
 
 
@@ -1506,10 +1574,13 @@ class StitcherGUI(QMainWindow):
         outlier_layout.addStretch()
         settings_layout.addWidget(self.outlier_widget)
 
-        # Show outlier controls when registration is enabled
-        self.registration_checkbox.toggled.connect(
-            lambda checked: self.outlier_widget.setVisible(checked)
-        )
+        # Show outlier controls when registration is enabled. This has to be applied
+        # ONCE here as well as on every toggle: registration_checkbox was already
+        # setChecked(True) above, so no toggled signal will ever fire for the initial
+        # state and the controls would stay invisible until the user unchecked and
+        # rechecked registration -- i.e. two live settings you could not reach.
+        self.registration_checkbox.toggled.connect(self.outlier_widget.setVisible)
+        self.outlier_widget.setVisible(self.registration_checkbox.isChecked())
 
         layout.addWidget(settings_group)
 
@@ -1644,13 +1715,19 @@ class StitcherGUI(QMainWindow):
         batch = self.is_batch_mode
         self.preview_button.setEnabled(not batch)
         self.calc_flatfield_button.setEnabled(not batch and self.drop_area.file_path is not None)
-        self.reg_zt_widget.setEnabled(not batch)
+        # The z/t/channel controls stay LIVE in batch mode. They are forwarded to every
+        # item, and the registration channel in particular has no usable default: the
+        # pipeline refuses to guess it and raises instead.
+        self.reg_zt_widget.setEnabled(True)
         if batch:
             self.preview_button.setToolTip("Preview is not available in batch mode")
             self.calc_flatfield_button.setToolTip(
                 "Calculate flatfield from a single dataset first, then load it for batch"
             )
-            self.reg_zt_widget.setToolTip("Registration z/t/channel uses defaults in batch mode")
+            self.reg_zt_widget.setToolTip(
+                "Registration z/t/channel — applied to every item in the batch. "
+                "Read from the first dataset; there is no automatic channel pick."
+            )
         else:
             self.preview_button.setToolTip("")
             self.calc_flatfield_button.setToolTip("")
@@ -1775,10 +1852,29 @@ class StitcherGUI(QMainWindow):
         self._update_batch_mode_ui()
         self.run_button.setEnabled(True)
 
-        self.dataset_n_z = 1
-        self.dataset_n_t = 1
-        self.dataset_n_channels = 1
-        self.dataset_channel_names = []
+        # Take the registration dimensions from the FIRST valid dataset and keep the
+        # z/t/channel controls live. Hardcoding 1/1/1 here used to hide those controls
+        # and force registration_channel=None for the whole batch, which on any
+        # multi-channel dataset is not a "default" at all -- registration raises
+        # "No registration channel selected" and every item fails. The chosen values
+        # apply to every item in the batch; that is stated in the tooltip.
+        try:
+            from tilefusion import TileFusion as _TF
+
+            probe = _TF(valid_paths[0])
+            self.dataset_n_z = probe.n_z
+            self.dataset_n_t = probe.n_t
+            self.dataset_n_channels = probe.channels
+            self.dataset_channel_names = probe._metadata.get(
+                "channel_names", [f"Channel {i}" for i in range(probe.channels)]
+            )
+            probe.close()
+        except Exception:
+            self.dataset_n_z = 1
+            self.dataset_n_t = 1
+            self.dataset_n_channels = 1
+            self.dataset_channel_names = []
+        self._update_reg_zt_controls()
 
         if not invalid_names:
             self.log(f"\nAll {len(valid_paths)} items valid. Ready to run batch.")
@@ -2173,6 +2269,7 @@ class StitcherGUI(QMainWindow):
             registration_channel=registration_channel,
             outlier_rel_thresh=self.outlier_rel_spin.value() / 100.0,
             outlier_abs_thresh=float(self.outlier_abs_spin.value()),
+            enable_distortion=self.distortion_checkbox.isChecked(),
         )
         self.worker.progress.connect(self.log)
         self.worker.finished.connect(self.on_fusion_finished)
@@ -2193,6 +2290,12 @@ class StitcherGUI(QMainWindow):
             fusion_mode,
             flatfield=flatfield,
             darkfield=darkfield,
+            registration_z=self.reg_z_spin.value() if self.dataset_n_z > 1 else None,
+            registration_t=self.reg_t_spin.value() if self.dataset_n_t > 1 else 0,
+            registration_channel=self._selected_registration_channel(),
+            outlier_rel_thresh=self.outlier_rel_spin.value() / 100.0,
+            outlier_abs_thresh=float(self.outlier_abs_spin.value()),
+            enable_distortion=self.distortion_checkbox.isChecked(),
         )
         self.worker.progress.connect(self.log)
         self.worker.error.connect(self.on_fusion_error)

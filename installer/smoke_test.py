@@ -107,6 +107,19 @@ def run():
         with limit_blas_threads(1):
             pass
 
+    def t_matplotlib():
+        # The GUI's flat-field "View" button renders with matplotlib's Agg backend.
+        # It is a hiddenimport in every installer spec, but nothing verified it was
+        # actually bundled -- a missing matplotlib only surfaced as a logged
+        # "Error opening viewer" once a user clicked the button.
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig = plt.figure()
+        plt.close(fig)
+
     def t_skimage():
         from skimage.registration import phase_cross_correlation  # noqa: F401
 
@@ -157,6 +170,7 @@ def run():
         ("napari <0.7 (works with forced legacy QGLWidget)", t_napari_frozen_safe_version),
         ("import tilefusion + modules", t_tilefusion),
         ("threadpoolctl BLAS limiter", t_threadpoolctl),
+        ("matplotlib Agg (flatfield viewer)", t_matplotlib),
     ]
 
     for name, fn in tests:

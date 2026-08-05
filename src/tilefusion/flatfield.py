@@ -472,9 +472,16 @@ def apply_flatfield_region(
     else:
         corrected = region_f / ff_safe
 
-    # ROUND, then clip -- see apply_flatfield. This is the registration path (core reads its
-    # overlap strips through here), so the bias landed on the pixels the correlator sees, not
-    # just on the fused output.
+    # ROUND, then clip -- see apply_flatfield. NOTE: for every reader that currently
+    # exists this branch is UNREACHABLE, because the region readers all return float32
+    # (io/base.py Reader.read_region, and read_ome_tiff_region), so `region.dtype` is
+    # never integral here. Registration therefore sees the raw, unrounded quotient --
+    # deliberately: sub-pixel cross-correlation wants the full-precision signal, and
+    # SquidXplorer's parity gate pins that behaviour. The branch is kept as a guard so
+    # that an integer-returning region reader could never silently reintroduce the
+    # truncation bias that `apply_flatfield` (which DOES see integers, from
+    # _OmeTiffTilesReader.read_tile) exists to prevent. See core._read_tile /
+    # core._read_tile_region for the full dtype map.
     if np.issubdtype(region.dtype, np.integer):
         info = np.iinfo(region.dtype)
         corrected = np.clip(np.rint(corrected), info.min, info.max)

@@ -44,7 +44,28 @@ from tilefusion.io.zarr import (
 
 @runtime_checkable
 class Reader(Protocol):
-    """Uniform interface for all tilefusion input formats."""
+    """Uniform interface for all tilefusion input formats.
+
+    DTYPE CONVENTION (measured, not aspirational -- pinned by
+    tests/test_io_readers.py::TestReaderDtypeConvention):
+
+    * ``read_region`` -- the REGISTRATION path -- returns float32 for every
+      reader, without exception. Sub-pixel cross-correlation wants the
+      full-precision quotient after flat-field division, so nothing on this
+      path re-quantises to integers. SquidXplorer's parity gate pins the
+      resulting offsets, so this half of the contract is load-bearing.
+    * ``read_tile`` -- the FUSION path -- returns float32 for every reader
+      EXCEPT ``_OmeTiffTilesReader``, which returns the file's native dtype
+      (uint16 in practice). That is a deliberate documented exception, not an
+      accident: it is the one path on which ``flatfield.apply_flatfield``'s
+      integer round-and-clip branch actually fires.
+
+    The practical consequence, stated plainly because it used to be implicit:
+    the same flat-field applied to the same pixels is rounded to integers on
+    the ome_tiff/ folder format and left fractional on every other format.
+    Fusion truncates to uint16 at the final write either way
+    (fusion.py, ``fused_block.astype(np.uint16)``).
+    """
 
     #: True for formats backed by many files (tiles / individual TIFFs / zarr),
     #: False for a single multi-series OME-TIFF file. Drives parallel-mode
@@ -61,7 +82,12 @@ class Reader(Protocol):
         z_level: int = 0,
         time_idx: int = 0,
     ) -> np.ndarray:
-        """Return all channels of *tile_idx* as an (C, Y, X) float32 array."""
+        """Return all channels of *tile_idx* as an (C, Y, X) array.
+
+        float32 for every reader except ``_OmeTiffTilesReader``, which returns
+        the file's native dtype (uint16). See the class docstring -- this is a
+        documented exception, and ``flatfield.apply_flatfield`` branches on it.
+        """
         ...
 
     def read_region(
