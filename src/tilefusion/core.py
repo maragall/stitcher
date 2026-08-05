@@ -518,7 +518,14 @@ class TileFusion:
     # -------------------------------------------------------------------------
 
     def _read_tile(self, tile_idx: int, z_level: int = None, time_idx: int = None) -> np.ndarray:
-        """Read a single tile from the input data (all channels)."""
+        """Read a single tile from the input data (all channels). FUSION path.
+
+        Returns float32 for every format except the ome_tiff/ folder format, which
+        returns native uint16 -- so ``apply_flatfield``'s integer round-and-clip
+        branch below fires for that format only. This asymmetry is real, measured
+        and documented on ``io.base.Reader``; it is NOT the same dtype the
+        registration path (``_read_tile_region``) sees.
+        """
         if z_level is None:
             z_level = self._registration_z  # Default to registration z-level
         if time_idx is None:
@@ -584,7 +591,14 @@ class TileFusion:
         z_level: int = None,
         time_idx: int = None,
     ) -> np.ndarray:
-        """Read a region of a tile from the input data."""
+        """Read a region of a tile from the input data. REGISTRATION path.
+
+        Always float32, for every format. Registration therefore correlates the
+        raw, unrounded flat-field quotient: ``apply_flatfield_region``'s integer
+        branch is unreachable from here by construction. Deliberate -- sub-pixel
+        cross-correlation wants full precision, and SquidXplorer's parity gate
+        pins the offsets this produces. See ``io.base.Reader``.
+        """
         if z_level is None:
             z_level = self._registration_z  # Default to registration z-level
         if time_idx is None:
@@ -1165,6 +1179,12 @@ class TileFusion:
 
             region_output = output_folder / f"{region}.ome.zarr"
 
+            # Every per-region TileFusion must inherit the FULL configuration of the
+            # parent, not just its geometry. Flat-field/dark-field, the registration
+            # z/t plane and the distortion-correction switch used to be dropped here,
+            # so a multi-region dataset was silently stitched with no illumination
+            # correction, on the middle z, with distortion forced on -- regardless of
+            # what the caller asked the parent for.
             tf = TileFusion(
                 self.tiff_path,
                 output_path=region_output,
@@ -1179,7 +1199,12 @@ class TileFusion:
                 channel_to_use=self.channel_to_use,
                 multiscale_downsample=self.multiscale_downsample,
                 region=region,
+                flatfield=self._flatfield,
+                darkfield=self._darkfield,
+                registration_z=self._registration_z,
+                registration_t=self._registration_t,
             )
+            tf.enable_distortion_correction = self.enable_distortion_correction
             tf.run()
 
         print(f"\n{'='*60}")
