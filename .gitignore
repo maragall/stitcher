@@ -229,3 +229,4 @@ docs/*deep-dive*
 docs/memory-optimizations-*
 docs/refactor-*
 .cephla-gate/
+.gstack/
