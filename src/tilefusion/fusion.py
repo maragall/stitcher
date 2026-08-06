@@ -466,6 +466,18 @@ def fuse_plane(
             # zero where no FOV covered (weight 0). No mask temporary.
             normalize_shard(fused_block, weight_sum)
 
+            # ROUND, then clip, before the integer cast -- same convention as
+            # flatfield.apply_flatfield and squidmip's _cast_like. The blend accumulates in
+            # float32 and `.astype` truncates toward zero, so without the rint every fused
+            # pixel loses its fractional part: a systematic bias of about half a count
+            # DOWNWARD across the whole mosaic, not a rounding wobble that averages out. The
+            # bias is absolute, so it costs a dim plane proportionally far more than a bright
+            # one. Clipping replaces the old silent uint16 wraparound (a blend of flat-field
+            # corrected floats can exceed 65535) with saturation. Both in place: the
+            # accumulator is re-zeroed per block, so no temporary is allocated here.
+            np.rint(fused_block, out=fused_block)
+            np.clip(fused_block, 0, 65535, out=fused_block)
+
             # Write to 5D output: (T, C, Z, Y, X)
             write_block(block_y, by_end, block_x, bx_end, fused_block.astype(np.uint16))
 

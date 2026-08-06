@@ -63,8 +63,10 @@ class Reader(Protocol):
     The practical consequence, stated plainly because it used to be implicit:
     the same flat-field applied to the same pixels is rounded to integers on
     the ome_tiff/ folder format and left fractional on every other format.
-    Fusion truncates to uint16 at the final write either way
-    (fusion.py, ``fused_block.astype(np.uint16)``).
+    Fusion quantises to uint16 at the final write either way, but it ROUNDS
+    (``np.rint`` + clip) rather than truncating (fusion.py, just before
+    ``write_block``), so the fractional half of that difference costs at most
+    half a count instead of biasing the whole mosaic downward.
     """
 
     #: True for formats backed by many files (tiles / individual TIFFs / zarr),
