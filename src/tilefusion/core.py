@@ -960,9 +960,9 @@ class TileFusion:
                 # back float32 for every reader but ome_tiff, so a bare `.astype` truncates
                 # each flat-field-corrected pixel toward zero: half a count of systematic
                 # dimming on the direct-placement path too, blend or no blend.
-                tile_region = np.clip(
-                    np.rint(tile_all[:, :tile_h, :tile_w]), 0, 65535
-                ).astype(np.uint16)
+                tile_region = np.clip(np.rint(tile_all[:, :tile_h, :tile_w]), 0, 65535).astype(
+                    np.uint16
+                )
                 # Shape: (1, C, 1, h, w)
                 self.fused_ts[
                     time_idx : time_idx + 1, :, z_level : z_level + 1, oy:y_end, ox:x_end
